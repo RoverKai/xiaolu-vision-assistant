@@ -1,0 +1,4 @@
+interface:
+  display_name: "PR & Commit Guidelines"
+  short_description: "Apply project PR and commit workflow rules"
+  default_prompt: "Use $pr-commit-guidelines to prepare a PR description or commit plan that follows this project workflow."
