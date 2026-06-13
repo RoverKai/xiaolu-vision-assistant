@@ -1,208 +1,97 @@
-import {
-  startTransition,
-  useEffect,
-  useEffectEvent,
-  useRef,
-  useState,
-} from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import type { Route } from "./+types/home";
 
-type Activity = "active" | "thinking";
-type ShareSection = "optimization" | "invite" | "confirmed";
-type ParticipantId = "lin" | "chenying" | "alex";
-type ShareRowTone = "todo" | "warn" | "send" | "done";
-type MessageRole = "system" | "participant" | "ai" | "user";
-
-type Participant = {
-  id: ParticipantId;
-  name: string;
-  shortName: string;
-  role: string;
-  tone?: "legal" | "product";
-  isSelf?: boolean;
-};
-
-type ShareRow = {
-  name: string;
-  owner: string;
-  due: string;
-  status: string;
-  tone: ShareRowTone;
-  active?: boolean;
-};
-
-type ShareSectionConfig = {
-  label: string;
-  chromeTitle: string;
-  chips: [string, string];
-  rows: ShareRow[];
-};
+type AssistantPhase =
+  | "idle"
+  | "listening"
+  | "capturing"
+  | "thinking"
+  | "speaking"
+  | "error";
+type MessageRole = "system" | "user" | "assistant";
 
 type Message = {
   id: number;
   role: MessageRole;
   meta: string;
   text: string;
-  thinking?: boolean;
+  imageDataUrl?: string | null;
+  audioDataUrl?: string | null;
 };
 
-const inviteLink =
-  "https://meeting.tencent.com/visual-assistant/room/8F2A-0917";
-const defaultPrompt = "请按发言人和优先级，整理当前共享页面里的改动项";
-const sharedPageHint =
-  "这里用前端演示效果模拟“点击共享后展示当前浏览页面”，暂未接入真实系统抓屏。";
-
-const participants: Participant[] = [
-  { id: "lin", name: "林", shortName: "林", role: "你", isSelf: true },
-  {
-    id: "chenying",
-    name: "陈颖",
-    shortName: "陈",
-    role: "设计",
-    tone: "legal",
-  },
-  {
-    id: "alex",
-    name: "Alex",
-    shortName: "A",
-    role: "产品",
-    tone: "product",
-  },
-];
-
-const shareSections: Record<ShareSection, ShareSectionConfig> = {
-  optimization: {
-    label: "本轮优化",
-    chromeTitle: "Web原型优化看板",
-    chips: ["本轮待定 3 项", "待确认 1 项"],
-    rows: [
-      {
-        name: "聊天区改宽与阅读优化",
-        owner: "林",
-        due: "18:30 前",
-        status: "进行中",
-        tone: "todo",
-        active: true,
-      },
-      {
-        name: "共享页内容改为原型优化看板",
-        owner: "Alex",
-        due: "19:00 前",
-        status: "待调整",
-        tone: "warn",
-      },
-      {
-        name: "邀请好友弹窗文案确认",
-        owner: "陈颖",
-        due: "今日内",
-        status: "待确认",
-        tone: "send",
-      },
-    ],
-  },
-  invite: {
-    label: "邀请协作",
-    chromeTitle: "邀请协作清单",
-    chips: ["邀请待办 2 项", "房间已在线 3 人"],
-    rows: [
-      {
-        name: "邀请链接文案与分享语确认",
-        owner: "陈颖",
-        due: "今日内",
-        status: "待确认",
-        tone: "send",
-        active: true,
-      },
-      {
-        name: "加入房间后的身份归类说明",
-        owner: "Alex",
-        due: "18:50 前",
-        status: "待调整",
-        tone: "warn",
-      },
-      {
-        name: "复制成功反馈与按钮状态",
-        owner: "林",
-        due: "已实现",
-        status: "已同步",
-        tone: "done",
-      },
-    ],
-  },
-  confirmed: {
-    label: "已确认项",
-    chromeTitle: "已确认事项",
-    chips: ["已确认 2 项", "待复核 1 项"],
-    rows: [
-      {
-        name: "AI 浮层保持贴合主舞台，不做侧边栏",
-        owner: "陈颖",
-        due: "已确认",
-        status: "已同步",
-        tone: "done",
-        active: true,
-      },
-      {
-        name: "共享窗口优先承载原型优化看板",
-        owner: "Alex",
-        due: "已确认",
-        status: "已同步",
-        tone: "done",
-      },
-      {
-        name: "聊天区发送后给出分析中反馈",
-        owner: "林",
-        due: "待复核",
-        status: "待确认",
-        tone: "send",
-      },
-    ],
-  },
+type AssistantResponse = {
+  text?: string;
+  audioDataUrl?: string | null;
+  ttsError?: string | null;
+  error?: string;
 };
+
+type AsrResponse = {
+  text?: string;
+  error?: string;
+};
+
+type AsrBackendState = "idle" | "active" | "unconfigured" | "error";
+
+type SpeechRecognitionConstructor = new () => SpeechRecognitionLike;
+
+type SpeechRecognitionLike = {
+  lang: string;
+  continuous: boolean;
+  interimResults: boolean;
+  onresult: ((event: SpeechRecognitionResultEventLike) => void) | null;
+  onerror: ((event: SpeechRecognitionErrorEventLike) => void) | null;
+  onend: (() => void) | null;
+  start: () => void;
+  stop: () => void;
+};
+
+type SpeechRecognitionErrorEventLike = {
+  error?: string;
+  message?: string;
+};
+
+type SpeechRecognitionResultEventLike = {
+  resultIndex: number;
+  results: ArrayLike<{
+    isFinal: boolean;
+    0: {
+      transcript: string;
+      confidence?: number;
+    };
+  }>;
+};
+
+declare global {
+  interface Window {
+    SpeechRecognition?: SpeechRecognitionConstructor;
+    webkitSpeechRecognition?: SpeechRecognitionConstructor;
+  }
+}
+
+const quietWindowMs = 2000;
+const asrChunkSeconds = 1.6;
+const asrSampleRate = 16000;
+const wakeWordPattern = /(小噜|小鹿|xiaolu|小路)/i;
+const defaultManualTranscript = "小噜，帮我看看画面里现在有什么重点";
 
 const initialMessages: Message[] = [
   {
     id: 1,
     role: "system",
-    meta: "AI 自动消息",
-    text: "你可以通过下方输入方式接入共享页面、摄像头或麦克风；共享当前页面后，我会按前端演示效果读取页面结构与任务状态。",
-  },
-  {
-    id: 2,
-    role: "participant",
-    meta: "11:39 · 陈颖（设计）",
-    text: "先确认一下，聊天区改宽和共享页内容重做这两项，是不是这轮都要今天定掉？",
-  },
-  {
-    id: 3,
-    role: "ai",
-    meta: "11:39 · AI",
-    text: "当前共享页面显示 3 项任务，其中“聊天区改宽与阅读优化”为进行中，“共享页内容改为原型优化看板”为待调整，“邀请好友弹窗文案确认”为待确认。",
-  },
-  {
-    id: 4,
-    role: "user",
-    meta: "11:41 · 你",
-    text: "那你帮我把这轮要改的点整理一下，顺便按发言人把结论归纳给大家。",
-  },
-  {
-    id: 5,
-    role: "ai",
-    meta: "11:41 · AI",
-    text: "可以，等你共享当前页面、开启摄像头，或者先把麦克风打开后，我会继续整理这轮优化项和结论。",
+    meta: "系统",
+    text: "开启摄像头和麦克风后，说“小噜”或“小鹿”开始提问。2 秒内没有新转写文本时，我会截取一张摄像头关键帧并调用多模态模型。",
   },
 ];
 
-const shareSectionOrder: ShareSection[] = ["optimization", "invite", "confirmed"];
-
 export function meta(_: Route.MetaArgs) {
   return [
-    { title: "小噜AI 视觉对话助手" },
+    { title: "小噜AI 视觉语音助手" },
     {
       name: "description",
       content:
-        "复刻腾讯会议视觉助手原型，并提供共享当前页面、摄像头、麦克风和 AI 对话联动体验。",
+        "支持摄像头、麦克风、唤醒词、静默截帧、多模态问答和 TTS 播放的视觉语音助手。",
     },
   ];
 }
@@ -213,143 +102,6 @@ function formatClock(date = new Date()) {
     minute: "2-digit",
     hour12: false,
   }).format(date);
-}
-
-function getEnabledInputs(
-  shareOn: boolean,
-  cameraOn: boolean,
-  microphoneOn: boolean,
-) {
-  return [
-    shareOn ? "共享页面" : null,
-    cameraOn ? "摄像头" : null,
-    microphoneOn ? "麦克风" : null,
-  ].filter((value): value is string => Boolean(value));
-}
-
-function getBannerMessage(
-  shareOn: boolean,
-  cameraOn: boolean,
-  microphoneOn: boolean,
-) {
-  if (shareOn && cameraOn && microphoneOn) {
-    return "小噜AI 已启动，正在同时理解共享页面、摄像头画面和麦克风语音。";
-  }
-
-  if (shareOn && cameraOn) {
-    return "小噜AI 已启动，正在同时理解共享页面和摄像头画面。";
-  }
-
-  if (shareOn && microphoneOn) {
-    return "小噜AI 已启动，正在读取共享页面，并同步收听你的语音补充。";
-  }
-
-  if (shareOn) {
-    return "小噜AI 已启动，当前正在读取你正在浏览的页面。";
-  }
-
-  if (cameraOn && microphoneOn) {
-    return "小噜AI 已启动，正在读取摄像头画面，并同步收听你的语音补充。";
-  }
-
-  if (cameraOn) {
-    return "小噜AI 已启动，当前正在读取摄像头画面。";
-  }
-
-  if (microphoneOn) {
-    return "小噜AI 已启动，当前正在收听房间语音，等待视觉输入接入。";
-  }
-
-  return "小噜AI 已启动，请先选择一种输入方式。";
-}
-
-function getStagePlaceholderText(cameraOn: boolean, microphoneOn: boolean) {
-  if (cameraOn && microphoneOn) {
-    return "摄像头和麦克风已接入，继续共享当前页面后，我会把视觉内容一起纳入结论。";
-  }
-
-  if (cameraOn) {
-    return "摄像头已开启，继续共享当前页面后，我会把画面和页面内容一起整理。";
-  }
-
-  if (microphoneOn) {
-    return "麦克风已开启，你可以先口头描述页面重点，我会在共享接入后继续跟进。";
-  }
-
-  return "选择下方输入方式后，我会开始读取页面、画面或语音内容。";
-}
-
-function getReplyText(
-  question: string,
-  shareOn: boolean,
-  cameraOn: boolean,
-  microphoneOn: boolean,
-  section: ShareSection,
-  activeSpeaker: Participant,
-) {
-  if (!shareOn && !cameraOn && !microphoneOn) {
-    return "请先接入一种输入方式，我再继续帮你整理。";
-  }
-
-  if (!shareOn && !cameraOn && microphoneOn) {
-    return "我已经在收听语音了，如果你还需要我直接理解页面内容，再打开共享当前页面或摄像头就行。";
-  }
-
-  if (question.includes("待办") || question.includes("总结")) {
-    return `这轮建议先收口“${shareSections.optimization.rows[0].name}”和“${shareSections.optimization.rows[1].name}”，再确认邀请弹窗文案，方便今天内一起定稿。`;
-  }
-
-  if (question.includes("邀请") || question.includes("弹窗")) {
-    return "邀请协作页当前重点是链接文案、身份归类说明和复制成功反馈，弹窗信息已经足够支持快速拉人进房。";
-  }
-
-  if (question.includes("谁") || question.includes("发言")) {
-    return `当前主发言人是${activeSpeaker.name}，重点在${activeSpeaker.role === "设计" ? "界面表达是否贴近原型" : activeSpeaker.role === "产品" ? "任务优先级和确认节奏" : "当前这轮的实现与收口安排"}。`;
-  }
-
-  if (question.includes("麦克风") || question.includes("语音")) {
-    return microphoneOn
-      ? "麦克风已经接入，我会把你的口头补充和房间发言一起纳入上下文。"
-      : "如果你希望我同步收听你的补充，可以把麦克风也打开。";
-  }
-
-  if (question.includes("页面") || question.includes("窗口")) {
-    if (shareOn) {
-      return `当前共享的是你浏览器里的“${shareSections[section].chromeTitle}”，AI 已经把页面里的任务项和房间对话一起纳入上下文。`;
-    }
-
-    if (cameraOn) {
-      return "当前还没有共享页面，我先根据摄像头和房间讨论继续理解现场，你也可以再打开共享当前页面。";
-    }
-
-    return "我已经在收听语音，如果你要我直接读取页面内容，再打开共享当前页面就行。";
-  }
-
-  if (shareOn && cameraOn && microphoneOn) {
-    return "我已经把当前页面、房间画面和麦克风语音一起纳入上下文，可以继续按发言人、任务和结论三个维度整理。";
-  }
-
-  if (cameraOn && microphoneOn) {
-    return "我已经关联到房间画面和麦克风语音，可以继续帮你按发言人、任务和结论三个维度整理。";
-  }
-
-  if (shareOn && cameraOn) {
-    return "我已经关联到共享页面和房间画面，可以继续帮你按发言人、任务和结论三个维度整理。";
-  }
-
-  if (cameraOn) {
-    return "我已经关联到房间画面，可以继续帮你按发言人、任务和结论三个维度整理；如果还要我一起看页面，再打开共享当前页面就行。";
-  }
-
-  if (microphoneOn) {
-    return "我已经开始收听房间语音，你可以继续口头补充；如果还要我理解页面内容，再接入共享当前页面或摄像头。";
-  }
-
-  return "我已关联页面内容和房间发言，可以继续帮你提炼结论。";
-}
-
-function getParticipantById(id: ParticipantId) {
-  return participants.find((participant) => participant.id === id) ?? participants[0];
 }
 
 function Icon({
@@ -384,12 +136,6 @@ function IconSprite() {
         <path d="M8.5 19.5h7"></path>
         <path d="M12 16v3.5"></path>
       </symbol>
-      <symbol id="icon-user-plus" viewBox="0 0 24 24">
-        <circle cx="9" cy="8" r="3"></circle>
-        <path d="M4.5 17a5.5 5.5 0 0 1 9 0"></path>
-        <path d="M17 8.5v6"></path>
-        <path d="M14 11.5h6"></path>
-      </symbol>
       <symbol id="icon-clock" viewBox="0 0 24 24">
         <circle cx="12" cy="12" r="8.5"></circle>
         <path d="M12 7.5V12l3 2"></path>
@@ -404,292 +150,680 @@ function IconSprite() {
         <path d="m21 3-9.5 18-1.9-7.6L3 11.5z"></path>
         <path d="M9.6 13.4 21 3"></path>
       </symbol>
-      <symbol id="icon-close" viewBox="0 0 24 24">
-        <path d="m7 7 10 10"></path>
-        <path d="M17 7 7 17"></path>
-      </symbol>
-      <symbol id="icon-copy" viewBox="0 0 24 24">
-        <rect x="8" y="7" width="10" height="12" rx="2"></rect>
-        <path d="M6.5 15H6A2.5 2.5 0 0 1 3.5 12.5V6A2.5 2.5 0 0 1 6 3.5h6.5A2.5 2.5 0 0 1 15 6v.5"></path>
-      </symbol>
       <symbol id="icon-check" viewBox="0 0 24 24">
         <circle cx="12" cy="12" r="8.5"></circle>
         <path d="m8.8 12.2 2.2 2.3 4.2-4.7"></path>
-      </symbol>
-      <symbol id="icon-chevron-down" viewBox="0 0 24 24">
-        <path d="m7.5 10 4.5 4.5 4.5-4.5"></path>
       </symbol>
     </svg>
   );
 }
 
+function stripWakeWord(text: string) {
+  return text.replace(wakeWordPattern, "").replace(/[，,。.\s]+$/g, "").trim();
+}
+
+function buildBannerMessage(phase: AssistantPhase, microphoneOn: boolean) {
+  if (phase === "thinking") {
+    return "小噜正在结合语音文本和摄像头关键帧生成回答。";
+  }
+
+  if (phase === "capturing") {
+    return "静默窗口已结束，正在截取摄像头关键帧。";
+  }
+
+  if (phase === "speaking") {
+    return "回答已生成，正在播放语音。";
+  }
+
+  if (phase === "error") {
+    return "链路发生错误，请查看右侧状态并重试。";
+  }
+
+  return microphoneOn
+    ? "麦克风已接入，等待“小噜”或“小鹿”唤醒。"
+    : "请先接入麦克风；摄像头可用于生成视觉关键帧。";
+}
+
+function getSpeechRecognitionConstructor() {
+  if (typeof window === "undefined") {
+    return null;
+  }
+
+  return window.SpeechRecognition ?? window.webkitSpeechRecognition ?? null;
+}
+
+function mergeAudioChunks(chunks: Float32Array[], sampleCount: number) {
+  const merged = new Float32Array(sampleCount);
+  let offset = 0;
+
+  for (const chunk of chunks) {
+    merged.set(chunk, offset);
+    offset += chunk.length;
+  }
+
+  return merged;
+}
+
+function downsampleToPcm16(samples: Float32Array, inputSampleRate: number) {
+  if (inputSampleRate === asrSampleRate) {
+    return floatToPcm16(samples);
+  }
+
+  const ratio = inputSampleRate / asrSampleRate;
+  const outputLength = Math.floor(samples.length / ratio);
+  const resampled = new Float32Array(outputLength);
+
+  for (let index = 0; index < outputLength; index += 1) {
+    const start = Math.floor(index * ratio);
+    const end = Math.min(Math.floor((index + 1) * ratio), samples.length);
+    let sum = 0;
+
+    for (let sampleIndex = start; sampleIndex < end; sampleIndex += 1) {
+      sum += samples[sampleIndex];
+    }
+
+    resampled[index] = sum / Math.max(1, end - start);
+  }
+
+  return floatToPcm16(resampled);
+}
+
+function floatToPcm16(samples: Float32Array) {
+  const pcm = new Int16Array(samples.length);
+
+  for (let index = 0; index < samples.length; index += 1) {
+    const sample = Math.max(-1, Math.min(1, samples[index]));
+    pcm[index] = sample < 0 ? sample * 0x8000 : sample * 0x7fff;
+  }
+
+  return pcm;
+}
+
+function pcm16ToBase64(samples: Int16Array) {
+  const bytes = new Uint8Array(samples.buffer);
+  let binary = "";
+  const chunkSize = 0x8000;
+
+  for (let offset = 0; offset < bytes.length; offset += chunkSize) {
+    binary += String.fromCharCode(
+      ...bytes.subarray(offset, Math.min(offset + chunkSize, bytes.length)),
+    );
+  }
+
+  return btoa(binary);
+}
+
 export default function Home() {
-  const [shareOn, setShareOn] = useState(false);
   const [cameraOn, setCameraOn] = useState(false);
   const [microphoneOn, setMicrophoneOn] = useState(false);
-  const [inputPanelOpen, setInputPanelOpen] = useState(false);
-  const [inviteOpen, setInviteOpen] = useState(false);
-  const [copied, setCopied] = useState(false);
-  const [activity, setActivity] = useState<Activity>("active");
-  const [activeSpeakerId, setActiveSpeakerId] = useState<ParticipantId>("chenying");
-  const [shareSection, setShareSection] = useState<ShareSection>("optimization");
-  const [prompt, setPrompt] = useState(defaultPrompt);
+  const [phase, setPhase] = useState<AssistantPhase>("idle");
   const [clockLabel, setClockLabel] = useState(() => formatClock());
-  const [currentPageUrl, setCurrentPageUrl] = useState("127.0.0.1:5173/#meeting");
   const [messages, setMessages] = useState<Message[]>(initialMessages);
+  const [manualTranscript, setManualTranscript] = useState(defaultManualTranscript);
+  const [liveTranscript, setLiveTranscript] = useState("");
+  const [wakeTranscript, setWakeTranscript] = useState("");
+  const [lastKeyframe, setLastKeyframe] = useState<string | null>(null);
+  const [cameraError, setCameraError] = useState("");
+  const [microphoneError, setMicrophoneError] = useState("");
+  const [assistantError, setAssistantError] = useState("");
+  const [audioLevel, setAudioLevel] = useState(0);
+  const [asrBackendState, setAsrBackendState] =
+    useState<AsrBackendState>("idle");
+  const [asrBackendMessage, setAsrBackendMessage] =
+    useState("等待麦克风接入");
 
-  const responseTimerRef = useRef<number | null>(null);
-  const copyTimerRef = useRef<number | null>(null);
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const cameraStreamRef = useRef<MediaStream | null>(null);
+  const microphoneStreamRef = useRef<MediaStream | null>(null);
+  const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
+  const shouldRestartRecognitionRef = useRef(false);
+  const quietTimerRef = useRef<number | null>(null);
+  const audioContextRef = useRef<AudioContext | null>(null);
+  const audioSourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
+  const audioProcessorRef = useRef<ScriptProcessorNode | null>(null);
+  const audioLevelFrameRef = useRef<number | null>(null);
+  const asrChunksRef = useRef<Float32Array[]>([]);
+  const asrSampleCountRef = useRef(0);
+  const asrUploadInFlightRef = useRef(false);
+  const asrBackendDisabledRef = useRef(false);
+  const activeUtteranceRef = useRef("");
+  const lastRecognizedTextRef = useRef<{ text: string; at: number } | null>(
+    null,
+  );
+  const messagesRef = useRef<Message[]>(initialMessages);
   const nextMessageIdRef = useRef(initialMessages.length + 1);
-  const conversationStreamRef = useRef<HTMLDivElement | null>(null);
-  const inputPanelRef = useRef<HTMLDivElement | null>(null);
 
-  const activeSpeaker = getParticipantById(activeSpeakerId);
-  const sectionConfig = shareSections[shareSection];
-  const enabledInputs = getEnabledInputs(shareOn, cameraOn, microphoneOn);
-  const hasEnabledInputs = enabledInputs.length > 0;
-  const statusText = activity === "thinking" ? "小噜AI 分析中" : "小噜AI 已启动";
-  const stageMetaText = shareOn
-    ? `当前浏览页面 · ${sectionConfig.chromeTitle}`
-    : "未共享页面";
-  const inputStatusText = hasEnabledInputs
-    ? `输入方式：${enabledInputs.join(" / ")}`
-    : "输入方式：未接入";
-  const inputSummaryText = hasEnabledInputs
-    ? enabledInputs.join(" · ")
-    : "共享页面、摄像头、麦克风";
+  const recognitionAvailable = Boolean(getSpeechRecognitionConstructor());
+  const statusText =
+    phase === "thinking"
+      ? "小噜AI 分析中"
+      : phase === "speaking"
+        ? "小噜AI 播报中"
+        : microphoneOn
+          ? "小噜AI 收听中"
+          : "小噜AI 待命";
 
-  const clearPendingResponse = useEffectEvent(() => {
-    if (responseTimerRef.current) {
-      window.clearTimeout(responseTimerRef.current);
-      responseTimerRef.current = null;
+  const stopCamera = useCallback(() => {
+    cameraStreamRef.current?.getTracks().forEach((track) => track.stop());
+    cameraStreamRef.current = null;
+    if (videoRef.current) {
+      videoRef.current.srcObject = null;
     }
-
-    startTransition(() => {
-      setMessages((currentMessages) =>
-        currentMessages.filter((message) => !message.thinking),
-      );
-    });
-  });
-
-  const syncClock = useEffectEvent(() => {
-    setClockLabel(formatClock());
-  });
-
-  const syncInviteFromHash = useEffectEvent(() => {
-    if (typeof window === "undefined") {
-      return;
-    }
-
-    setInviteOpen(window.location.hash === "#invite");
-  });
-
-  const syncCurrentPageUrl = useEffectEvent(() => {
-    if (typeof window === "undefined") {
-      return;
-    }
-
-    const { host, pathname, hash } = window.location;
-    setCurrentPageUrl(`${host}${pathname}${hash || "#meeting"}`);
-  });
-
-  const appendMessage = useEffectEvent((message: Message) => {
-    startTransition(() => {
-      setMessages((currentMessages) => [...currentMessages, message]);
-    });
-  });
-
-  const handleToggleShare = useEffectEvent(() => {
-    if (!shareOn) {
-      setShareSection("optimization");
-    }
-
-    setShareOn((current) => !current);
-  });
-
-  const handleToggleCamera = useEffectEvent(() => {
-    setCameraOn((current) => !current);
-  });
-
-  const handleToggleMicrophone = useEffectEvent(() => {
-    setMicrophoneOn((current) => !current);
-  });
-
-  const handleAskAI = useEffectEvent((question: string) => {
-    const cleanQuestion = question.trim();
-    if (!cleanQuestion) {
-      return;
-    }
-
-    clearPendingResponse();
-
-    const userMessage: Message = {
-      id: nextMessageIdRef.current++,
-      role: "user",
-      meta: `${formatClock()} · 你`,
-      text: cleanQuestion,
-    };
-    const thinkingMessage: Message = {
-      id: nextMessageIdRef.current++,
-      role: "ai",
-      meta: "正在思考…",
-      text: "正在结合共享页面和房间发言分析…",
-      thinking: true,
-    };
-
-    startTransition(() => {
-      setMessages((currentMessages) => [
-        ...currentMessages,
-        userMessage,
-        thinkingMessage,
-      ]);
-    });
-    setActivity("thinking");
-    setPrompt("");
-
-    responseTimerRef.current = window.setTimeout(() => {
-      const replyMessage: Message = {
-        id: nextMessageIdRef.current++,
-        role: "ai",
-        meta: `${formatClock()} · AI`,
-        text: getReplyText(
-          cleanQuestion,
-          shareOn,
-          cameraOn,
-          microphoneOn,
-          shareSection,
-          activeSpeaker,
-        ),
-      };
-
-      startTransition(() => {
-        setMessages((currentMessages) =>
-          currentMessages
-            .filter((message) => message.id !== thinkingMessage.id)
-            .concat(replyMessage),
-        );
-      });
-      setActivity("active");
-      responseTimerRef.current = null;
-    }, 1100);
-  });
-
-  const handleCopyInvite = useEffectEvent(async () => {
-    try {
-      if (navigator.clipboard?.writeText) {
-        await navigator.clipboard.writeText(inviteLink);
-      }
-    } catch {
-      // Ignore clipboard failures for prototype mode.
-    }
-
-    if (copyTimerRef.current) {
-      window.clearTimeout(copyTimerRef.current);
-    }
-
-    setCopied(true);
-    copyTimerRef.current = window.setTimeout(() => {
-      setCopied(false);
-      copyTimerRef.current = null;
-    }, 1400);
-  });
-
-  const handleEndConversation = useEffectEvent(() => {
-    clearPendingResponse();
-    setShareOn(false);
     setCameraOn(false);
+  }, []);
+
+  const stopAudioLevel = useCallback(() => {
+    if (audioLevelFrameRef.current) {
+      window.cancelAnimationFrame(audioLevelFrameRef.current);
+      audioLevelFrameRef.current = null;
+    }
+
+    if (audioProcessorRef.current) {
+      audioProcessorRef.current.onaudioprocess = null;
+      audioProcessorRef.current.disconnect();
+      audioProcessorRef.current = null;
+    }
+
+    audioSourceRef.current?.disconnect();
+    audioSourceRef.current = null;
+    asrChunksRef.current = [];
+    asrSampleCountRef.current = 0;
+    void audioContextRef.current?.close();
+    audioContextRef.current = null;
+    setAudioLevel(0);
+  }, []);
+
+  const stopMicrophone = useCallback(() => {
+    shouldRestartRecognitionRef.current = false;
+    try {
+      recognitionRef.current?.stop();
+    } catch {
+      // Browser recognition can throw if it is already stopped.
+    }
+    recognitionRef.current = null;
+    microphoneStreamRef.current?.getTracks().forEach((track) => track.stop());
+    microphoneStreamRef.current = null;
+    stopAudioLevel();
     setMicrophoneOn(false);
-    setInputPanelOpen(false);
-    setInviteOpen(false);
-    setCopied(false);
-    setActivity("active");
-    setActiveSpeakerId("chenying");
-    setPrompt(defaultPrompt);
-    appendMessage({
-      id: nextMessageIdRef.current++,
-      role: "system",
-      meta: "AI 自动消息",
-      text: "本次演示已结束，重新接入共享页面、摄像头或麦克风后，小噜AI 会继续进入分析状态。",
-    });
-  });
+    setPhase((currentPhase) =>
+      currentPhase === "listening" || currentPhase === "speaking"
+        ? "idle"
+        : currentPhase,
+    );
+  }, [stopAudioLevel]);
 
-  useEffect(() => {
-    syncClock();
-    const timer = window.setInterval(syncClock, 15000);
-
-    return () => {
-      window.clearInterval(timer);
-    };
-  }, [syncClock]);
-
-  useEffect(() => {
-    syncInviteFromHash();
-    window.addEventListener("hashchange", syncInviteFromHash);
-
-    return () => {
-      window.removeEventListener("hashchange", syncInviteFromHash);
-    };
-  }, [syncInviteFromHash]);
-
-  useEffect(() => {
-    syncCurrentPageUrl();
-    window.addEventListener("hashchange", syncCurrentPageUrl);
-
-    return () => {
-      window.removeEventListener("hashchange", syncCurrentPageUrl);
-    };
-  }, [syncCurrentPageUrl]);
-
-  useEffect(() => {
-    const nextHash = inviteOpen ? "#invite" : "#meeting";
-    if (window.location.hash !== nextHash) {
-      window.history.replaceState(null, "", nextHash);
+  const clearQuietTimer = useCallback(() => {
+    if (quietTimerRef.current) {
+      window.clearTimeout(quietTimerRef.current);
+      quietTimerRef.current = null;
     }
-  }, [inviteOpen]);
+  }, []);
 
-  useEffect(() => {
-    conversationStreamRef.current?.lastElementChild?.scrollIntoView({
-      block: "nearest",
-    });
-  }, [messages]);
+  const captureKeyframe = useCallback(() => {
+    const video = videoRef.current;
+    const canvas = canvasRef.current;
 
-  useEffect(() => {
-    if (!inputPanelOpen) {
-      return;
+    if (!video || !canvas || video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) {
+      return null;
     }
 
-    const handlePointerDown = (event: MouseEvent) => {
-      if (inputPanelRef.current?.contains(event.target as Node)) {
+    const width = video.videoWidth || 1280;
+    const height = video.videoHeight || 720;
+    canvas.width = width;
+    canvas.height = height;
+
+    const context = canvas.getContext("2d");
+    if (!context) {
+      return null;
+    }
+
+    context.drawImage(video, 0, 0, width, height);
+    return canvas.toDataURL("image/jpeg", 0.82);
+  }, []);
+
+  const appendMessage = useCallback((message: Omit<Message, "id">) => {
+    setMessages((currentMessages) => [
+      ...currentMessages,
+      {
+        ...message,
+        id: nextMessageIdRef.current++,
+      },
+    ]);
+  }, []);
+
+  const submitAssistantQuestion = useCallback(
+    async (question: string, imageDataUrl: string | null) => {
+      const cleanQuestion = question.trim();
+      if (!cleanQuestion && !imageDataUrl) {
         return;
       }
 
-      setInputPanelOpen(false);
-    };
+      setAssistantError("");
+      setPhase("thinking");
+      appendMessage({
+        role: "user",
+        meta: `${formatClock()} · 你`,
+        text: cleanQuestion || "请根据当前画面回答。",
+        imageDataUrl,
+      });
 
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        setInputPanelOpen(false);
+      try {
+        const response = await fetch("/api/assistant", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            transcript: cleanQuestion,
+            imageDataUrl,
+            speak: true,
+            history: messagesRef.current
+              .filter((message) => message.role !== "system")
+              .slice(-8)
+              .map((message) => ({
+                role: message.role === "assistant" ? "assistant" : "user",
+                text: message.text,
+              })),
+          }),
+        });
+
+        const data = (await response.json()) as AssistantResponse;
+        if (!response.ok || data.error) {
+          throw new Error(data.error || `Assistant request failed: ${response.status}`);
+        }
+
+        const answer = data.text?.trim() || "我没有得到可用回答。";
+        appendMessage({
+          role: "assistant",
+          meta: `${formatClock()} · 小噜`,
+          text: data.ttsError ? `${answer}\n\n语音合成未完成：${data.ttsError}` : answer,
+          audioDataUrl: data.audioDataUrl,
+        });
+
+        if (data.audioDataUrl) {
+          setPhase("speaking");
+          const audio = new Audio(data.audioDataUrl);
+          audio.onended = () => setPhase(microphoneOn ? "listening" : "idle");
+          audio.onerror = () => setPhase(microphoneOn ? "listening" : "idle");
+          const played = await audio.play().then(
+            () => true,
+            () => false,
+          );
+          if (!played) {
+            setAssistantError("浏览器阻止了自动播放，可使用消息里的音频控件播放。");
+            setPhase(microphoneOn ? "listening" : "idle");
+          }
+        } else {
+          setPhase(microphoneOn ? "listening" : "idle");
+        }
+      } catch (error) {
+        const message =
+          error instanceof Error ? error.message : "小噜服务调用失败。";
+        setAssistantError(message);
+        setPhase("error");
+        appendMessage({
+          role: "system",
+          meta: `${formatClock()} · 错误`,
+          text: message,
+        });
+      }
+    },
+    [appendMessage, microphoneOn],
+  );
+
+  const finalizeWakeQuestion = useCallback(async () => {
+    clearQuietTimer();
+    const question = activeUtteranceRef.current.trim();
+    activeUtteranceRef.current = "";
+    setWakeTranscript("");
+
+    if (!question) {
+      return;
+    }
+
+    setPhase("capturing");
+    const keyframe = cameraOn ? captureKeyframe() : null;
+    setLastKeyframe(keyframe);
+    await submitAssistantQuestion(question, keyframe);
+  }, [cameraOn, captureKeyframe, clearQuietTimer, submitAssistantQuestion]);
+
+  const scheduleQuietWindow = useCallback(() => {
+    clearQuietTimer();
+    quietTimerRef.current = window.setTimeout(() => {
+      void finalizeWakeQuestion();
+    }, quietWindowMs);
+  }, [clearQuietTimer, finalizeWakeQuestion]);
+
+  const handleRecognizedText = useCallback(
+    (rawText: string) => {
+      const cleanText = rawText.replace(/\s+/g, " ").trim();
+      if (!cleanText) {
+        return;
+      }
+
+      const now = Date.now();
+      const lastText = lastRecognizedTextRef.current;
+      if (
+        lastText &&
+        now - lastText.at < 3000 &&
+        (cleanText.includes(lastText.text) || lastText.text.includes(cleanText))
+      ) {
+        return;
+      }
+      lastRecognizedTextRef.current = { text: cleanText, at: now };
+
+      setLiveTranscript(cleanText);
+      const hasWakeWord = wakeWordPattern.test(cleanText);
+
+      if (hasWakeWord) {
+        const afterWakeWord = stripWakeWord(cleanText);
+        activeUtteranceRef.current = afterWakeWord;
+        setWakeTranscript(afterWakeWord || cleanText);
+        setPhase("listening");
+        scheduleQuietWindow();
+        return;
+      }
+
+      if (!activeUtteranceRef.current) {
+        return;
+      }
+
+      activeUtteranceRef.current = `${activeUtteranceRef.current} ${cleanText}`.trim();
+      setWakeTranscript(activeUtteranceRef.current);
+      scheduleQuietWindow();
+    },
+    [scheduleQuietWindow],
+  );
+
+  const startBrowserRecognition = useCallback(() => {
+    const Recognition = getSpeechRecognitionConstructor();
+    if (!Recognition) {
+      setMicrophoneError("当前浏览器没有 Web Speech 连续转写能力，可使用右侧手动转写框。");
+      return;
+    }
+
+    const recognition = new Recognition();
+    recognition.lang = "zh-CN";
+    recognition.continuous = true;
+    recognition.interimResults = true;
+    recognition.onresult = (event) => {
+      let finalText = "";
+      let interimText = "";
+
+      for (let index = event.resultIndex; index < event.results.length; index += 1) {
+        const result = event.results[index];
+        if (result.isFinal) {
+          finalText += result[0].transcript;
+        } else {
+          interimText += result[0].transcript;
+        }
+      }
+
+      if (interimText.trim()) {
+        setLiveTranscript(interimText.trim());
+      }
+
+      if (finalText.trim()) {
+        handleRecognizedText(finalText.trim());
       }
     };
-
-    window.addEventListener("mousedown", handlePointerDown);
-    window.addEventListener("keydown", handleKeyDown);
-
-    return () => {
-      window.removeEventListener("mousedown", handlePointerDown);
-      window.removeEventListener("keydown", handleKeyDown);
+    recognition.onerror = (event) => {
+      setMicrophoneError(event.message || event.error || "浏览器语音识别发生错误。");
     };
-  }, [inputPanelOpen]);
+    recognition.onend = () => {
+      if (!shouldRestartRecognitionRef.current) {
+        return;
+      }
+
+      window.setTimeout(() => {
+        try {
+          recognition.start();
+        } catch {
+          // Ignore restart races from browser speech recognition.
+        }
+      }, 250);
+    };
+
+    recognitionRef.current = recognition;
+    shouldRestartRecognitionRef.current = true;
+
+    try {
+      recognition.start();
+    } catch {
+      setMicrophoneError("语音识别启动失败，可使用右侧手动转写框。");
+    }
+  }, [handleRecognizedText]);
+
+  const uploadAsrChunk = useCallback(
+    async (samples: Float32Array, inputSampleRate: number) => {
+      if (asrBackendDisabledRef.current || asrUploadInFlightRef.current) {
+        return;
+      }
+
+      asrUploadInFlightRef.current = true;
+      try {
+        const pcm = downsampleToPcm16(samples, inputSampleRate);
+        const response = await fetch("/api/asr", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            pcm16Base64: pcm16ToBase64(pcm),
+            sampleRate: asrSampleRate,
+          }),
+        });
+        const data = (await response.json()) as AsrResponse;
+
+        if (!response.ok || data.error) {
+          throw new Error(data.error || `ASR request failed: ${response.status}`);
+        }
+
+        setAsrBackendState("active");
+        setAsrBackendMessage(
+          data.text?.trim()
+            ? "火山 ASR 已返回文本。"
+            : "火山 ASR 已连接，当前片段无文本。",
+        );
+
+        if (data.text?.trim()) {
+          handleRecognizedText(data.text.trim());
+        }
+      } catch (error) {
+        const message =
+          error instanceof Error ? error.message : "火山 ASR 调用失败。";
+
+        if (message.includes("Missing VOLCENGINE_ASR_API_KEY")) {
+          asrBackendDisabledRef.current = true;
+          setAsrBackendState("unconfigured");
+          setAsrBackendMessage(
+            "未配置 VOLCENGINE_ASR_API_KEY，使用浏览器或手动转写。",
+          );
+        } else {
+          setAsrBackendState("error");
+          setAsrBackendMessage(message);
+        }
+      } finally {
+        asrUploadInFlightRef.current = false;
+      }
+    },
+    [handleRecognizedText],
+  );
+
+  const startAudioLevel = useCallback((stream: MediaStream) => {
+    const AudioContextClass = window.AudioContext;
+    if (!AudioContextClass) {
+      return;
+    }
+
+    const audioContext = new AudioContextClass();
+    const analyser = audioContext.createAnalyser();
+    analyser.fftSize = 512;
+
+    const source = audioContext.createMediaStreamSource(stream);
+    const processor = audioContext.createScriptProcessor(4096, 1, 1);
+    audioSourceRef.current = source;
+    audioProcessorRef.current = processor;
+    source.connect(analyser);
+    source.connect(processor);
+    processor.connect(audioContext.destination);
+    audioContextRef.current = audioContext;
+
+    const samples = new Uint8Array(analyser.frequencyBinCount);
+    const tick = () => {
+      analyser.getByteTimeDomainData(samples);
+      let sum = 0;
+      for (const sample of samples) {
+        const normalized = (sample - 128) / 128;
+        sum += normalized * normalized;
+      }
+      setAudioLevel(Math.min(1, Math.sqrt(sum / samples.length) * 5));
+      audioLevelFrameRef.current = window.requestAnimationFrame(tick);
+    };
+
+    processor.onaudioprocess = (event) => {
+      const input = event.inputBuffer.getChannelData(0);
+      const output = event.outputBuffer.getChannelData(0);
+      output.fill(0);
+
+      if (asrBackendDisabledRef.current) {
+        return;
+      }
+
+      asrChunksRef.current.push(new Float32Array(input));
+      asrSampleCountRef.current += input.length;
+
+      const targetSamples = Math.floor(audioContext.sampleRate * asrChunkSeconds);
+      if (asrSampleCountRef.current < targetSamples) {
+        return;
+      }
+
+      const chunk = mergeAudioChunks(
+        asrChunksRef.current,
+        asrSampleCountRef.current,
+      );
+      asrChunksRef.current = [];
+      asrSampleCountRef.current = 0;
+      void uploadAsrChunk(chunk, audioContext.sampleRate);
+    };
+
+    tick();
+  }, [uploadAsrChunk]);
+
+  const startCamera = useCallback(async () => {
+    setCameraError("");
+
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: {
+          width: { ideal: 1280 },
+          height: { ideal: 720 },
+          facingMode: "user",
+        },
+      });
+
+      cameraStreamRef.current = stream;
+      if (videoRef.current) {
+        videoRef.current.srcObject = stream;
+        await videoRef.current.play().catch(() => undefined);
+      }
+      setCameraOn(true);
+    } catch (error) {
+      setCameraError(
+        error instanceof Error ? error.message : "摄像头权限获取失败。",
+      );
+      setCameraOn(false);
+    }
+  }, []);
+
+  const startMicrophone = useCallback(async () => {
+    setMicrophoneError("");
+
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+        },
+      });
+
+      microphoneStreamRef.current = stream;
+      setMicrophoneOn(true);
+      setPhase("listening");
+      if (!asrBackendDisabledRef.current) {
+        setAsrBackendState("idle");
+        setAsrBackendMessage("火山 ASR 短片段识别已启动。");
+      }
+      startAudioLevel(stream);
+      startBrowserRecognition();
+    } catch (error) {
+      setMicrophoneError(
+        error instanceof Error ? error.message : "麦克风权限获取失败。",
+      );
+      setMicrophoneOn(false);
+    }
+  }, [startAudioLevel, startBrowserRecognition]);
+
+  const handleManualTranscriptSubmit = useCallback(() => {
+    handleRecognizedText(manualTranscript);
+    setManualTranscript("");
+  }, [handleRecognizedText, manualTranscript]);
+
+  const handleImmediateAsk = useCallback(() => {
+    const question =
+      activeUtteranceRef.current.trim() || stripWakeWord(manualTranscript);
+    activeUtteranceRef.current = question;
+    void finalizeWakeQuestion();
+  }, [finalizeWakeQuestion, manualTranscript]);
+
+  const handleCaptureOnly = useCallback(() => {
+    const keyframe = captureKeyframe();
+    setLastKeyframe(keyframe);
+    if (!keyframe) {
+      setCameraError("摄像头未准备好，无法截取关键帧。");
+    }
+  }, [captureKeyframe]);
+
+  const handleReset = useCallback(() => {
+    clearQuietTimer();
+    activeUtteranceRef.current = "";
+    setMessages(initialMessages);
+    messagesRef.current = initialMessages;
+    nextMessageIdRef.current = initialMessages.length + 1;
+    setManualTranscript(defaultManualTranscript);
+    setLiveTranscript("");
+    setWakeTranscript("");
+    setLastKeyframe(null);
+    setAssistantError("");
+    setCameraError("");
+    setMicrophoneError("");
+    setAsrBackendState(asrBackendDisabledRef.current ? "unconfigured" : "idle");
+    setAsrBackendMessage(
+      asrBackendDisabledRef.current
+        ? "未配置 VOLCENGINE_ASR_API_KEY，使用浏览器或手动转写。"
+        : "等待麦克风接入",
+    );
+    setPhase(microphoneOn ? "listening" : "idle");
+  }, [clearQuietTimer, microphoneOn]);
+
+  useEffect(() => {
+    messagesRef.current = messages;
+  }, [messages]);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => setClockLabel(formatClock()), 15000);
+    return () => window.clearInterval(timer);
+  }, []);
 
   useEffect(() => {
     return () => {
-      clearPendingResponse();
-
-      if (copyTimerRef.current) {
-        window.clearTimeout(copyTimerRef.current);
-      }
+      stopCamera();
+      stopMicrophone();
+      clearQuietTimer();
     };
-  }, [clearPendingResponse]);
+  }, [clearQuietTimer, stopCamera, stopMicrophone]);
 
   return (
     <>
@@ -697,12 +831,9 @@ export default function Home() {
 
       <div
         className="prototype-shell"
-        data-share={shareOn ? "on" : "off"}
         data-camera={cameraOn ? "on" : "off"}
         data-microphone={microphoneOn ? "on" : "off"}
-        data-invite={inviteOpen ? "open" : "closed"}
-        data-copy={copied ? "done" : "idle"}
-        data-activity={activity}
+        data-activity={phase}
       >
         <div className="app-surface">
           <div className="meeting-shell">
@@ -710,9 +841,9 @@ export default function Home() {
               <div className="topbar__left">
                 <div className="logo">
                   <span className="logo__mark" aria-hidden="true"></span>
-                  <span>小噜AI 视觉对话助手</span>
+                  <span>小噜AI 视觉语音助手</span>
                 </div>
-                <span className="room-pill">3 人在线</span>
+                <span className="room-pill">唤醒词：小噜 / 小鹿</span>
               </div>
 
               <div className="topbar__center">
@@ -724,7 +855,10 @@ export default function Home() {
               </div>
 
               <div className="topbar__right">
-                <span className="meta-pill">{inputStatusText}</span>
+                <span className="meta-pill">
+                  {cameraOn ? "摄像头已接入" : "摄像头未接入"} /{" "}
+                  {microphoneOn ? "麦克风已接入" : "麦克风未接入"}
+                </span>
                 <button className="user-chip" type="button" aria-label="当前用户">
                   林
                 </button>
@@ -733,222 +867,254 @@ export default function Home() {
 
             <div className="notice-bar">
               <span className="notice-bar__dot"></span>
-              <span>{getBannerMessage(shareOn, cameraOn, microphoneOn)}</span>
+              <span>{buildBannerMessage(phase, microphoneOn)}</span>
             </div>
 
-            <main className="content-area">
-              
+            <main className="content-area content-area--assistant">
+              <section className="voice-workspace" aria-label="视觉语音助手工作台">
+                <section className="vision-panel">
+                  <div className="panel-header">
+                    <div>
+                      <p className="panel-eyebrow">视觉输入</p>
+                      <h2>摄像头关键帧</h2>
+                    </div>
+                    <span className={`status-chip${cameraOn ? " status-chip--live" : ""}`}>
+                      {cameraOn ? "实时画面" : "未接入"}
+                    </span>
+                  </div>
+
+                  <div className="camera-stage">
+                    <video
+                      ref={videoRef}
+                      className="camera-preview"
+                      autoPlay
+                      muted
+                      playsInline
+                    />
+                    {!cameraOn && (
+                      <div className="camera-placeholder">
+                        <Icon name="icon-camera" />
+                        <strong>等待摄像头接入</strong>
+                        <span>接入后，静默窗口结束时会自动截取一张关键帧。</span>
+                      </div>
+                    )}
+                    <canvas ref={canvasRef} className="capture-canvas" />
+                  </div>
+
+                  <div className="keyframe-strip">
+                    <div className="keyframe-preview">
+                      {lastKeyframe ? (
+                        <img src={lastKeyframe} alt="最近一次摄像头关键帧" />
+                      ) : (
+                        <span>暂无关键帧</span>
+                      )}
+                    </div>
+                    <div className="keyframe-meta">
+                      <strong>最近关键帧</strong>
+                      <span>
+                        {lastKeyframe
+                          ? "会随本轮问题一起发送给多模态模型。"
+                          : "说出唤醒词并结束提问后自动生成。"}
+                      </span>
+                    </div>
+                  </div>
+                </section>
+
+                <section className="voice-panel">
+                  <div className="panel-header">
+                    <div>
+                      <p className="panel-eyebrow">语音输入</p>
+                      <h2>唤醒词与连续文本</h2>
+                    </div>
+                    <span
+                      className={`status-chip${microphoneOn ? " status-chip--live" : ""}`}
+                    >
+                      {microphoneOn ? "收听中" : "未接入"}
+                    </span>
+                  </div>
+
+                  <div className="voice-meter" aria-label="麦克风音量">
+                    <span style={{ transform: `scaleX(${Math.max(audioLevel, 0.04)})` }} />
+                  </div>
+
+                  <div className="transcript-grid">
+                    <div className="transcript-box">
+                      <span>实时转写</span>
+                      <p>{liveTranscript || "等待语音识别结果。"}</p>
+                    </div>
+                    <div className="transcript-box transcript-box--active">
+                      <span>当前唤醒片段</span>
+                      <p>
+                        {wakeTranscript ||
+                          "检测到“小噜”或“小鹿”后，这里会持续累积文本。"}
+                      </p>
+                    </div>
+                  </div>
+
+                  <label className="manual-asr">
+                    <span>手动转写输入</span>
+                    <textarea
+                      value={manualTranscript}
+                      onChange={(event) => setManualTranscript(event.target.value)}
+                      rows={4}
+                    />
+                  </label>
+
+                  <div className="voice-actions">
+                    <button
+                      className="secondary-button secondary-button--inline"
+                      type="button"
+                      onClick={handleManualTranscriptSubmit}
+                      disabled={!manualTranscript.trim()}
+                    >
+                      <Icon name="icon-check" />
+                      <span>提交转写</span>
+                    </button>
+                    <button
+                      className="send-button send-button--wide"
+                      type="button"
+                      onClick={handleImmediateAsk}
+                      disabled={!manualTranscript.trim() && !wakeTranscript.trim()}
+                    >
+                      <Icon name="icon-send" />
+                      <span>立即提问</span>
+                    </button>
+                  </div>
+
+                  <div className="integration-status">
+                    <p>
+                      火山 ASR：
+                      {asrBackendState === "active"
+                        ? "已连接"
+                        : asrBackendState === "unconfigured"
+                          ? "未配置"
+                          : asrBackendState === "error"
+                            ? "异常"
+                            : "待启动"}
+                    </p>
+                    <p>{asrBackendMessage}</p>
+                    <p>
+                      浏览器转写：
+                      {recognitionAvailable ? "兜底可用" : "不可用，可使用手动转写"}
+                    </p>
+                    <p>静默窗口：{quietWindowMs / 1000} 秒无新文本后自动截帧</p>
+                  </div>
+
+                  {(cameraError || microphoneError || assistantError) && (
+                    <div className="error-stack">
+                      {cameraError && <p>{cameraError}</p>}
+                      {microphoneError && <p>{microphoneError}</p>}
+                      {assistantError && <p>{assistantError}</p>}
+                    </div>
+                  )}
+                </section>
+
+                <section className="assistant-log">
+                  <div className="panel-header">
+                    <div>
+                      <p className="panel-eyebrow">输出</p>
+                      <h2>回答与语音</h2>
+                    </div>
+                    <span className="status-chip">多模态 + TTS</span>
+                  </div>
+
+                  <div className="message-list">
+                    {messages.map((message) => (
+                      <article
+                        className={`message-card message-card--${message.role}`}
+                        key={message.id}
+                      >
+                        <div className="message-card__meta">{message.meta}</div>
+                        <p>{message.text}</p>
+                        {message.imageDataUrl && (
+                          <img
+                            className="message-card__image"
+                            src={message.imageDataUrl}
+                            alt="随问题发送的摄像头关键帧"
+                          />
+                        )}
+                        {message.audioDataUrl && (
+                          <audio
+                            className="message-card__audio"
+                            src={message.audioDataUrl}
+                            controls
+                          />
+                        )}
+                      </article>
+                    ))}
+                  </div>
+                </section>
+              </section>
             </main>
 
             <footer className="toolbar">
               <div className="toolbar__group">
-                <div className="input-control" ref={inputPanelRef}>
-                  <button
-                    className={`control-button control-button--input${hasEnabledInputs ? " control-button--active" : ""}${inputPanelOpen ? " control-button--open" : ""}`}
-                    type="button"
-                    aria-expanded={inputPanelOpen}
-                    aria-controls="input-panel"
-                    onClick={() => setInputPanelOpen((current) => !current)}
-                  >
-                    <span className="control-button__icon">
-                      <Icon name="icon-screen" />
-                    </span>
-                    <span className="control-button__content">
-                      <span className="control-button__label">输入方式</span>
-                      <span className="control-button__summary">{inputSummaryText}</span>
-                    </span>
-                    <span className="control-button__chevron" aria-hidden="true">
-                      <Icon
-                        name="icon-chevron-down"
-                        className="icon control-button__chevron-icon"
-                      />
-                    </span>
-                  </button>
+                <button
+                  className={`control-button${cameraOn ? " control-button--active" : ""}`}
+                  type="button"
+                  aria-pressed={cameraOn}
+                  onClick={() => {
+                    if (cameraOn) {
+                      stopCamera();
+                    } else {
+                      void startCamera();
+                    }
+                  }}
+                >
+                  <span className="control-button__icon">
+                    <Icon name="icon-camera" />
+                  </span>
+                  <span className="control-button__label">
+                    {cameraOn ? "关闭摄像头" : "开启摄像头"}
+                  </span>
+                </button>
 
-                  <div
-                    className={`input-popover${inputPanelOpen ? " input-popover--open" : ""}`}
-                    id="input-panel"
-                  >
-                    <div className="input-popover__header">
-                      <div>
-                        <p className="input-popover__eyebrow">输入方式</p>
-                        <h3>把当前可用的视觉与语音信号接进来</h3>
-                      </div>
-                      <span className="input-popover__count">
-                        {hasEnabledInputs ? `${enabledInputs.length} 项已接入` : "尚未接入"}
-                      </span>
-                    </div>
-
-                    <div className="input-popover__grid">
-                      <button
-                        className={`input-source${shareOn ? " input-source--active" : ""}`}
-                        type="button"
-                        aria-pressed={shareOn}
-                        onClick={handleToggleShare}
-                      >
-                        <span className="input-source__icon">
-                          <Icon name="icon-screen" />
-                        </span>
-                        <span className="input-source__body">
-                          <strong>共享当前页面</strong>
-                          <span>
-                            {shareOn
-                              ? `舞台区正在展示“${sectionConfig.chromeTitle}”的浏览器式快照，点击可停止共享。`
-                              : "把你当前浏览的页面作为视觉输入接进来，舞台区会切成浏览器预览。"}
-                          </span>
-                        </span>
-                        <span className="input-source__badge">
-                          {shareOn ? "共享中" : "点击接入"}
-                        </span>
-                      </button>
-
-                      <button
-                        className={`input-source${cameraOn ? " input-source--active" : ""}`}
-                        type="button"
-                        aria-pressed={cameraOn}
-                        onClick={handleToggleCamera}
-                      >
-                        <span className="input-source__icon">
-                          <Icon name="icon-camera" />
-                        </span>
-                        <span className="input-source__body">
-                          <strong>摄像头</strong>
-                          <span>
-                            {cameraOn
-                              ? "已接入你的本地画面，AI 会继续理解在场状态，点击可关闭。"
-                              : "补充读取你当前的现场画面，适合和共享页面一起使用。"}
-                          </span>
-                        </span>
-                        <span className="input-source__badge">
-                          {cameraOn ? "已接入" : "点击接入"}
-                        </span>
-                      </button>
-
-                      <button
-                        className={`input-source${microphoneOn ? " input-source--active" : ""}`}
-                        type="button"
-                        aria-pressed={microphoneOn}
-                        onClick={handleToggleMicrophone}
-                      >
-                        <span className="input-source__icon">
-                          <Icon name="icon-microphone" />
-                        </span>
-                        <span className="input-source__body">
-                          <strong>麦克风</strong>
-                          <span>
-                            {microphoneOn
-                              ? "正在同步你的口头补充，适合边看页面边讲重点，点击可关闭。"
-                              : "同步收听你的口头补充，方便你一边操作页面一边给 AI 说明。"}
-                          </span>
-                        </span>
-                        <span className="input-source__badge">
-                          {microphoneOn ? "收音中" : "点击接入"}
-                        </span>
-                      </button>
-                    </div>
-
-                    <div className="input-popover__hint">
-                      <span className="input-popover__hint-dot"></span>
-                      {sharedPageHint}
-                    </div>
-                  </div>
-                </div>
+                <button
+                  className={`control-button${microphoneOn ? " control-button--active" : ""}`}
+                  type="button"
+                  aria-pressed={microphoneOn}
+                  onClick={() => {
+                    if (microphoneOn) {
+                      stopMicrophone();
+                    } else {
+                      void startMicrophone();
+                    }
+                  }}
+                >
+                  <span className="control-button__icon">
+                    <Icon name="icon-microphone" />
+                  </span>
+                  <span className="control-button__label">
+                    {microphoneOn ? "关闭麦克风" : "开启麦克风"}
+                  </span>
+                </button>
 
                 <button
                   className="control-button"
                   type="button"
-                  onClick={() => {
-                    setInputPanelOpen(false);
-                    setInviteOpen(true);
-                  }}
+                  onClick={handleCaptureOnly}
+                  disabled={!cameraOn}
                 >
                   <span className="control-button__icon">
-                    <Icon name="icon-user-plus" />
+                    <Icon name="icon-screen" />
                   </span>
-                  <span className="control-button__label">邀请好友</span>
+                  <span className="control-button__label">截取关键帧</span>
                 </button>
               </div>
 
               <div className="toolbar__group toolbar__group--right">
-                <button className="end-button" type="button" onClick={handleEndConversation}>
+                <button className="control-button" type="button" onClick={handleReset}>
+                  <span className="control-button__icon">
+                    <Icon name="icon-check" />
+                  </span>
+                  <span className="control-button__label">重置会话</span>
+                </button>
+                <button className="end-button" type="button" onClick={stopMicrophone}>
                   <Icon name="icon-phone-off" />
-                  <span>结束对话</span>
+                  <span>结束收听</span>
                 </button>
               </div>
             </footer>
-          </div>
-
-          <div className="modal-layer modal-layer--invite">
-            <div className="modal-card invite-modal">
-              <div className="modal-card__header">
-                <div>
-                  <p className="modal-eyebrow">多人房间入口</p>
-                  <h2>邀请好友加入当前房间</h2>
-                </div>
-                <button
-                  className="icon-button"
-                  type="button"
-                  onClick={() => setInviteOpen(false)}
-                  aria-label="关闭邀请弹窗"
-                >
-                  <Icon name="icon-close" />
-                </button>
-              </div>
-
-              <div className="invite-grid">
-                <section className="invite-block">
-                  <div className="invite-block__title">
-                    <h3>邀请链接</h3>
-                    <p>
-                      发送给好友后，对方加入房间，AI 会自动把发言人与共享内容一起纳入上下文。
-                    </p>
-                  </div>
-                  <div className="invite-link">
-                    <span>{inviteLink}</span>
-                    <button
-                      className="secondary-button"
-                      type="button"
-                      onClick={handleCopyInvite}
-                    >
-                      <Icon
-                        name="icon-copy"
-                        className="icon invite-copy-icon invite-copy-icon--copy"
-                      />
-                      <Icon
-                        name="icon-check"
-                        className="icon invite-copy-icon invite-copy-icon--check"
-                      />
-                      <span>{copied ? "已复制链接" : "复制链接"}</span>
-                    </button>
-                  </div>
-                </section>
-
-                <section className="invite-block">
-                  <div className="invite-block__title">
-                    <h3>当前房间成员</h3>
-                    <p>加入房间后，AI 会按成员身份归纳发言。</p>
-                  </div>
-                  <div className="member-list">
-                    {participants.map((participant) => {
-                      const avatarToneClass = participant.tone
-                        ? ` member-row__avatar--${participant.tone}`
-                        : "";
-                      return (
-                        <article key={participant.id} className="member-row">
-                          <div className={`member-row__avatar${avatarToneClass}`}>
-                            {participant.shortName}
-                          </div>
-                          <div className="member-row__meta">
-                            <strong>{participant.name}</strong>
-                            <span>{participant.role} · 已在线</span>
-                          </div>
-                        </article>
-                      );
-                    })}
-                  </div>
-                </section>
-              </div>
-            </div>
           </div>
         </div>
       </div>
