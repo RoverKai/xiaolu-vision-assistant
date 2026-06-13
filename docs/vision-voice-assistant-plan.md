@@ -27,10 +27,11 @@ VOLCENGINE_ASR_API_KEY=...
 VOLCENGINE_ASR_RESOURCE_ID=volc.seedasr.sauc.duration
 VOLCENGINE_TTS_API_KEY=...
 VOLCENGINE_TTS_RESOURCE_ID=seed-tts-2.0
-VOLCENGINE_TTS_SPEAKER=zh_female_shuangkuaisisi_moon_bigtts
+VOLCENGINE_TTS_SPEAKER=zh_female_cancan_mars_bigtts
 ```
 
 `ARK_API_KEY`, `VOLCENGINE_ASR_API_KEY`, and `VOLCENGINE_TTS_API_KEY` are intentionally server-only. Do not expose them with a `VITE_` prefix.
+`VOLCENGINE_TTS_RESOURCE_ID` and `VOLCENGINE_TTS_SPEAKER` must belong to the same Volcengine TTS version. For example, `seed-tts-2.0` requires a TTS 2.0 speaker.
 
 ## Remaining Hardening
 
