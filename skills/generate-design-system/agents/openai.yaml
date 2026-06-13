@@ -1,0 +1,4 @@
+interface:
+  display_name: "Generate Design System"
+  short_description: "Audit and unify frontend UI patterns"
+  default_prompt: "Use $generate-design-system to audit this frontend and create a consistent project design system."
