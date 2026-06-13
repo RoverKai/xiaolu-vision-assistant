@@ -52,9 +52,12 @@ Use this structure when the user asks for a PR description:
 
 ## Commit Guidance
 
-Keep commits aligned with the PR's single purpose. The source project guidance does not define a required commit prefix format, so do not invent one unless the repository later adds it.
+Keep commits aligned with the PR's single purpose. Use a consistent Conventional Commits style for the first-line header:
 
-- Use short, imperative commit messages, for example `Add camera permission check`.
+- Format headers as `type(scope): imperative summary`, for example `feat(camera): add permission check`.
+- Keep the header concise and specific; describe the change in the imperative mood, such as `add`, `fix`, or `update`, not `added`, `fixed`, or `updated`.
+- Use `scope` in parentheses to identify the changed module, package, feature area, or workflow.
+- Use `feat` only for user-visible features or capabilities. Use `fix` only for bug fixes or behavior corrections. Keep these definitions consistent across the team.
 - Keep unrelated formatting, generated files, or refactors out of feature commits unless they are required for the change.
 - Before committing, inspect the diff and mention the validation performed.
 
