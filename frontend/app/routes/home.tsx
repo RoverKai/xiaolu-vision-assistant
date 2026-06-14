@@ -1529,67 +1529,60 @@ export default function Home() {
 
             <main className="content-area content-area--assistant">
               <section className="voice-workspace" aria-label="视觉语音助手工作台">
-                <section className="vision-panel">
-                  <div className="panel-header">
-                    <div>
-                      <p className="panel-eyebrow">视觉输入</p>
-                      <h2>摄像头画面</h2>
-                    </div>
-                    <span className={`status-chip${cameraOn ? " status-chip--live" : ""}`}>
-                      {cameraOn ? "实时" : "未接入"}
-                    </span>
-                  </div>
 
-                  <div className="vision-panel__video">
-                    <div className="video-grid" data-count="1">
-                      <div className="video-item">
-                        <video
-                          ref={videoRef}
-                          className="camera-preview"
-                          autoPlay
-                          muted
-                          playsInline
-                        />
-                        {!cameraOn && (
-                          <div className="camera-placeholder">
-                            <Icon name="icon-camera" />
-                            <span>未接入</span>
-                          </div>
-                        )}
+                {/* Video grid: spans left + middle, row 1 */}
+                <div className="video-grid-area">
+                  <div className="video-grid" data-count="2">
+                    <div className="video-item">
+                      <video
+                        ref={videoRef}
+                        className="camera-preview"
+                        autoPlay
+                        muted
+                        playsInline
+                      />
+                      {!cameraOn && (
+                        <div className="camera-placeholder">
+                          <Icon name="icon-camera" />
+                          <span>未接入</span>
+                        </div>
+                      )}
+                    </div>
+                    <div className="video-item">
+                      <div className="camera-placeholder">
+                        <Icon name="icon-camera" />
+                        <span>未接入</span>
                       </div>
                     </div>
                   </div>
-
-                  <div className="vision-panel__keyframe">
-                    <div className="keyframe-strip">
-                      <div className="keyframe-preview">
-                        {lastKeyframe ? (
-                          <img src={lastKeyframe} alt="最近关键帧" />
-                        ) : (
-                          <span>暂无关键帧</span>
-                        )}
-                      </div>
-                      <div className="keyframe-meta">
-                        <strong>最近关键帧</strong>
-                        <span>
-                          {lastKeyframe ? "就绪" : "等待提问后自动生成"}
-                        </span>
-                      </div>
-                    </div>
-                  </div>
-
                   <canvas ref={canvasRef} className="capture-canvas" />
-                </section>
+                </div>
 
-                <section className="voice-panel">
+                {/* Keyframe: left column, row 2 */}
+                <div className="keyframe-area">
+                  <div className="keyframe-strip">
+                    <div className="keyframe-preview">
+                      {lastKeyframe ? (
+                        <img src={lastKeyframe} alt="最近关键帧" />
+                      ) : (
+                        <span>暂无关键帧</span>
+                      )}
+                    </div>
+                    <div className="keyframe-meta">
+                      <strong>最近关键帧</strong>
+                      <span>{lastKeyframe ? "就绪" : "等待提问后生成"}</span>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Character area: middle column, row 2 */}
+                <div className="character-area">
                   <div className="panel-header">
                     <div>
                       <p className="panel-eyebrow">语音输入</p>
-                      <h2>转写</h2>
+                      <h2>小噜</h2>
                     </div>
-                    <span
-                      className={`status-chip${microphoneOn ? " status-chip--live" : ""}`}
-                    >
+                    <span className={`status-chip${microphoneOn ? " status-chip--live" : ""}`}>
                       {microphoneOn ? "收听中" : "未接入"}
                     </span>
                   </div>
@@ -1614,7 +1607,7 @@ export default function Home() {
                     <textarea
                       value={manualTranscript}
                       onChange={(event) => setManualTranscript(event.target.value)}
-                      rows={4}
+                      rows={3}
                     />
                   </label>
 
@@ -1646,15 +1639,15 @@ export default function Home() {
                       {assistantError && <p>{assistantError}</p>}
                     </div>
                   )}
-                </section>
+                </div>
 
-                <section className="assistant-log">
+                {/* Chat: right column, rows 1-2 */}
+                <div className="chat-area">
                   <div className="panel-header">
                     <div>
                       <p className="panel-eyebrow">输出</p>
-                      <h2>回答与语音</h2>
+                      <h2>回答</h2>
                     </div>
-                    <span className="status-chip">多模态 + TTS</span>
                   </div>
 
                   <div className="message-list">
@@ -1669,7 +1662,7 @@ export default function Home() {
                           <img
                             className="message-card__image"
                             src={message.imageDataUrl}
-                            alt="随问题发送的摄像头关键帧"
+                            alt="关键帧"
                           />
                         )}
                         {message.audioDataUrl && (
@@ -1682,7 +1675,8 @@ export default function Home() {
                       </article>
                     ))}
                   </div>
-                </section>
+                </div>
+
               </section>
             </main>
 
