@@ -360,6 +360,7 @@ function extractAudioSlice(
 export default function Home() {
   const [cameraOn, setCameraOn] = useState(false);
   const [microphoneOn, setMicrophoneOn] = useState(false);
+  const [screenSharingOn, setScreenSharingOn] = useState(false);
   const [phase, setPhase] = useState<AssistantPhase>("idle");
   const [clockLabel, setClockLabel] = useState(() => formatClock());
   const [messages, setMessages] = useState<Message[]>(initialMessages);
@@ -380,6 +381,8 @@ export default function Home() {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const cameraStreamRef = useRef<MediaStream | null>(null);
   const microphoneStreamRef = useRef<MediaStream | null>(null);
+  const screenStreamRef = useRef<MediaStream | null>(null);
+  const screenVideoRef = useRef<HTMLVideoElement | null>(null);
   const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
   const shouldRestartRecognitionRef = useRef(false);
   const quietTimerRef = useRef<number | null>(null);
@@ -426,6 +429,32 @@ export default function Home() {
     }
     setCameraOn(false);
   }, []);
+
+  const stopScreenShare = useCallback(() => {
+    screenStreamRef.current?.getTracks().forEach((track) => track.stop());
+    screenStreamRef.current = null;
+    if (screenVideoRef.current) {
+      screenVideoRef.current.srcObject = null;
+    }
+    setScreenSharingOn(false);
+  }, []);
+
+  const startScreenShare = useCallback(async () => {
+    try {
+      const stream = await navigator.mediaDevices.getDisplayMedia({
+        video: true,
+        audio: false,
+      });
+      screenStreamRef.current = stream;
+      if (screenVideoRef.current) {
+        screenVideoRef.current.srcObject = stream;
+      }
+      stream.getVideoTracks()[0].onended = () => stopScreenShare();
+      setScreenSharingOn(true);
+    } catch {
+      // user cancelled
+    }
+  }, [stopScreenShare]);
 
   const stopAudioLevel = useCallback(() => {
     if (audioLevelFrameRef.current) {
@@ -1471,9 +1500,10 @@ export default function Home() {
     return () => {
       stopCamera();
       stopMicrophone();
+      stopScreenShare();
       clearQuietTimer();
     };
-  }, [clearQuietTimer, stopCamera, stopMicrophone]);
+  }, [clearQuietTimer, stopCamera, stopMicrophone, stopScreenShare]);
 
   return (
     <>
@@ -1518,23 +1548,31 @@ export default function Home() {
 
                 {/* Video grid: spans left + middle, row 1 */}
                 <div className="video-grid-area">
-                  <div className="video-grid" data-count={cameraOn ? "1" : "0"}>
-                    <div className="video-item">
-                      <video
-                        ref={videoRef}
-                        className="camera-preview"
-                        autoPlay
-                        muted
-                        playsInline
-                      />
-                      {!cameraOn && (
-                        <div className="camera-placeholder">
-                          <Icon name="icon-camera" />
-                          <span>未接入</span>
-                        </div>
-                      )}
-                    </div>
-                  </div>
+                  {(() => {
+                    const count = (cameraOn ? 1 : 0) + (screenSharingOn ? 1 : 0);
+                    return (
+                      <div className="video-grid" data-count={String(count)}>
+                        {!cameraOn && !screenSharingOn && (
+                          <div className="video-item">
+                            <div className="camera-placeholder">
+                              <Icon name="icon-camera" />
+                              <span>未接入</span>
+                            </div>
+                          </div>
+                        )}
+                        {cameraOn && (
+                          <div className="video-item">
+                            <video ref={videoRef} className="camera-preview" autoPlay muted playsInline />
+                          </div>
+                        )}
+                        {screenSharingOn && (
+                          <div className="video-item">
+                            <video ref={screenVideoRef} className="camera-preview" autoPlay muted playsInline />
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })()}
                   <canvas ref={canvasRef} className="capture-canvas" />
                 </div>
 
@@ -1674,15 +1712,23 @@ export default function Home() {
                 </button>
 
                 <button
-                  className="control-button"
+                  className={`control-button${screenSharingOn ? " control-button--active" : ""}`}
                   type="button"
-                  onClick={handleCaptureOnly}
-                  disabled={!cameraOn}
+                  aria-pressed={screenSharingOn}
+                  onClick={() => {
+                    if (screenSharingOn) {
+                      stopScreenShare();
+                    } else {
+                      void startScreenShare();
+                    }
+                  }}
                 >
                   <span className="control-button__icon">
                     <Icon name="icon-screen" />
                   </span>
-                  <span className="control-button__label">截取关键帧</span>
+                  <span className="control-button__label">
+                    {screenSharingOn ? "停止共享" : "共享屏幕"}
+                  </span>
                 </button>
               </div>
 
