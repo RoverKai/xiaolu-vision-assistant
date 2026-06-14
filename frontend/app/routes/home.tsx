@@ -255,6 +255,11 @@ function pcm16ToBase64(samples: Int16Array) {
 }
 
 function computeWordOverlap(textA: string, textB: string): number {
+  // Substring containment: one text is a progressive refinement of the other
+  if (textA.includes(textB) || textB.includes(textA)) {
+    return 1;
+  }
+
   const wordsA = new Set(textA.split(/\s+/).filter(Boolean));
   const wordsB = new Set(textB.split(/\s+/).filter(Boolean));
   if (wordsA.size === 0 && wordsB.size === 0) {
