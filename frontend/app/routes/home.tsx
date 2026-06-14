@@ -424,9 +424,6 @@ export default function Home() {
   const stopCamera = useCallback(() => {
     cameraStreamRef.current?.getTracks().forEach((track) => track.stop());
     cameraStreamRef.current = null;
-    if (videoRef.current) {
-      videoRef.current.srcObject = null;
-    }
     setCameraOn(false);
   }, []);
 
@@ -1397,10 +1394,6 @@ export default function Home() {
       });
 
       cameraStreamRef.current = stream;
-      if (videoRef.current) {
-        videoRef.current.srcObject = stream;
-        await videoRef.current.play().catch(() => undefined);
-      }
       setCameraOn(true);
     } catch (error) {
       setCameraError(
@@ -1505,6 +1498,18 @@ export default function Home() {
       }
     };
   }, [screenSharingOn]);
+
+  useEffect(() => {
+    if (cameraOn && cameraStreamRef.current && videoRef.current) {
+      videoRef.current.srcObject = cameraStreamRef.current;
+      videoRef.current.play().catch(() => undefined);
+    }
+    return () => {
+      if (videoRef.current) {
+        videoRef.current.srcObject = null;
+      }
+    };
+  }, [cameraOn]);
 
   useEffect(() => {
     const timer = window.setInterval(() => setClockLabel(formatClock()), 15000);
