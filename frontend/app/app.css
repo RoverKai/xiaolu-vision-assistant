@@ -2268,7 +2268,7 @@ input {
   position: relative;
   z-index: var(--z-stage);
   display: grid;
-  grid-template-columns: minmax(360px, 1.1fr) minmax(320px, 0.9fr) minmax(360px, 0.95fr);
+  grid-template-columns: 4fr 3fr 3fr;
   gap: var(--space-4);
   min-height: 0;
 }
@@ -2285,6 +2285,85 @@ input {
   background: var(--surface-glass-strong);
   box-shadow: var(--shadow-sm);
   overflow: hidden;
+}
+
+/* Vision panel 7:3 vertical split */
+.vision-panel__video {
+  flex: 7;
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.vision-panel__keyframe {
+  flex: 3;
+  min-height: 0;
+  overflow: hidden;
+  border-top: 1px solid var(--line);
+}
+
+/* Multi-person video grid */
+.video-grid {
+  display: grid;
+  gap: 4px;
+  padding: 4px;
+  flex: 1;
+  min-height: 0;
+}
+
+.video-grid[data-count="2"] {
+  grid-template-columns: 1fr 1fr;
+}
+
+.video-grid[data-count="3"] {
+  grid-template-columns: 1fr 1fr;
+  grid-template-rows: 1fr 1fr;
+}
+
+.video-grid[data-count="3"] .video-item:first-child {
+  grid-column: 1 / -1;
+}
+
+.video-grid[data-count="4"] {
+  grid-template-columns: 1fr 1fr;
+  grid-template-rows: 1fr 1fr;
+}
+
+.video-item {
+  aspect-ratio: 16 / 9;
+  border: 1px solid #e8e8e8;
+  border-radius: 8px;
+  overflow: hidden;
+  background: #1a1a1a;
+  position: relative;
+}
+
+.video-item .camera-preview {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.video-item .camera-placeholder {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  align-content: center;
+  gap: var(--space-2);
+  color: var(--text-inverse);
+  text-align: center;
+}
+
+.video-item .camera-placeholder .icon {
+  width: 32px;
+  height: 32px;
+}
+
+.video-item .camera-placeholder span {
+  font-size: var(--font-size-sm);
+  color: var(--text-inverse-muted);
 }
 
 .panel-header {
@@ -2332,56 +2411,6 @@ input {
   color: var(--color-success);
 }
 
-.camera-stage {
-  position: relative;
-  margin: var(--space-5);
-  aspect-ratio: 16 / 10;
-  min-height: 300px;
-  overflow: hidden;
-  border: 1px solid var(--line);
-  border-radius: var(--radius-lg);
-  background:
-    linear-gradient(135deg, rgba(29, 33, 41, 0.94), rgba(29, 33, 41, 0.78)),
-    var(--palette-gray-900);
-}
-
-.camera-preview {
-  width: 100%;
-  height: 100%;
-  display: block;
-  object-fit: cover;
-  background: var(--palette-gray-900);
-}
-
-.camera-placeholder {
-  position: absolute;
-  inset: 0;
-  display: grid;
-  place-items: center;
-  align-content: center;
-  gap: var(--space-3);
-  padding: var(--space-6);
-  color: var(--text-inverse);
-  text-align: center;
-}
-
-.camera-placeholder .icon {
-  width: 40px;
-  height: 40px;
-  opacity: 0.86;
-}
-
-.camera-placeholder strong {
-  font-size: var(--font-size-xl);
-  font-weight: var(--font-weight-semibold);
-}
-
-.camera-placeholder span {
-  max-width: 280px;
-  color: rgba(255, 255, 255, 0.72);
-  font-size: var(--font-size-md);
-  line-height: var(--line-height-relaxed);
-}
 
 .capture-canvas {
   display: none;
@@ -2389,13 +2418,10 @@ input {
 
 .keyframe-strip {
   display: grid;
-  grid-template-columns: 132px minmax(0, 1fr);
+  grid-template-columns: 100px minmax(0, 1fr);
   gap: var(--space-3);
-  margin: 0 var(--space-5) var(--space-5);
   padding: var(--space-3);
-  border: 1px solid var(--line);
-  border-radius: var(--radius-lg);
-  background: var(--surface-panel-muted);
+  height: 100%;
 }
 
 .keyframe-preview {
@@ -2553,19 +2579,6 @@ input {
   height: 18px;
 }
 
-.integration-status {
-  margin: var(--space-4) var(--space-5) 0;
-  padding: var(--space-3);
-  border-radius: var(--radius-lg);
-  background: var(--surface-panel-muted);
-}
-
-.integration-status p {
-  margin: var(--space-1) 0;
-  color: var(--text-secondary);
-  font-size: var(--font-size-sm);
-  line-height: var(--line-height-normal);
-}
 
 .error-stack {
   margin: var(--space-4) var(--space-5) 0;
@@ -2646,7 +2659,7 @@ input {
 
 @media (max-width: 1540px) {
   .voice-workspace {
-    grid-template-columns: minmax(360px, 1fr) minmax(360px, 1fr);
+    grid-template-columns: 1fr 1fr;
   }
 
   .assistant-log {
@@ -2660,8 +2673,8 @@ input {
     grid-template-columns: 1fr;
   }
 
-  .camera-stage {
-    min-height: 240px;
+  .video-item {
+    aspect-ratio: 16 / 10;
   }
 
   .keyframe-strip,
