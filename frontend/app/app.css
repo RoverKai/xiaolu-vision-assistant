@@ -2448,10 +2448,45 @@ input {
 .chat-input {
   flex-shrink: 0;
   display: flex;
+  flex-wrap: wrap;
   gap: var(--space-2);
   padding: var(--space-3) var(--space-4);
   border-top: 1px solid var(--line);
   background: var(--surface-panel);
+}
+
+.asr-backend-toggle {
+  display: flex;
+  gap: 0;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  flex-shrink: 0;
+}
+
+.asr-backend-toggle__btn {
+  padding: 4px var(--space-3);
+  border: none;
+  background: var(--surface-panel);
+  font-size: var(--font-size-sm);
+  font-family: inherit;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition:
+    background var(--motion-fast) var(--ease-standard),
+    color var(--motion-fast) var(--ease-standard);
+  white-space: nowrap;
+  line-height: var(--line-height-normal);
+}
+
+.asr-backend-toggle__btn--active {
+  background: var(--color-action-primary);
+  color: var(--text-inverse);
+}
+
+.asr-backend-toggle__btn:not(.asr-backend-toggle__btn--active):hover {
+  background: var(--surface-panel-muted);
+  color: var(--text-secondary);
 }
 
 .chat-input__field {

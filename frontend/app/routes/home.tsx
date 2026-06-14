@@ -70,14 +70,14 @@ declare global {
   }
 }
 
-const quietWindowMs = 1000;
+const quietWindowMs = 3000;
 const asrChunkSeconds = 0.32;
 const asrSampleRate = 16000;
 const maxUtteranceSeconds = 30;
 const maxKeyframeEdge = 768;
 const keyframeJpegQuality = 0.72;
 const authoritativeAsrBudgetMs = 450;
-const wakeWordPattern = /(小噜|小鹿|xiaolu|小路)，?/i;
+const wakeWordPattern = /(小噜|小鹿|xiaolu|小路|小如)，?/i;
 const defaultManualTranscript = "";
 
 const initialMessages: Message[] = [];
@@ -376,6 +376,9 @@ export default function Home() {
     useState<AsrBackendState>("idle");
   const [asrBackendMessage, setAsrBackendMessage] =
     useState("等待麦克风接入");
+  const [asrBackendChoice, setAsrBackendChoice] = useState<
+    "volcengine" | "browser"
+  >("volcengine");
 
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -396,6 +399,7 @@ export default function Home() {
   const asrChunkQueueRef = useRef<Array<{ pcm16Base64: string; sampleRate: number }>>([]);
   const asrUploadInFlightRef = useRef(false);
   const asrBackendDisabledRef = useRef(false);
+  const asrBackendChoiceRef = useRef<"volcengine" | "browser">("volcengine");
   const utteranceAudioChunksRef = useRef<Float32Array[]>([]);
   const utteranceSampleCountRef = useRef(0);
   const utteranceSampleRateRef = useRef(0);
@@ -403,6 +407,8 @@ export default function Home() {
   const utteranceUploadInFlightRef = useRef(false);
   const phaseRef = useRef<AssistantPhase>("idle");
   const microphoneOnRef = useRef(false);
+  const cameraOnRef = useRef(false);
+  const screenSharingOnRef = useRef(false);
   const utteranceStartTimeRef = useRef(0);
   const activeUtteranceRef = useRef("");
   const lastRecognizedTextRef = useRef<{ text: string; at: number } | null>(
@@ -1001,12 +1007,14 @@ export default function Home() {
     }
 
     setPhase("capturing");
-    const keyframe = cameraOn
+    const camOn = cameraOnRef.current;
+    const scrOn = screenSharingOnRef.current;
+    const keyframe = camOn
       ? captureKeyframe("camera")
-      : screenSharingOn
+      : scrOn
         ? captureKeyframe("screen")
         : null;
-    if ((cameraOn || screenSharingOn) && !keyframe) {
+    if ((camOn || scrOn) && !keyframe) {
       console.warn(
         "[finalizeWakeQuestion] video source is on but keyframe capture returned null",
       );
@@ -1045,7 +1053,7 @@ export default function Home() {
     }
 
     await submitAssistantQuestion(question, keyframe);
-  }, [cameraOn, screenSharingOn, captureKeyframe, clearQuietTimer, submitAssistantQuestion, uploadUtteranceAsr]);
+  }, [captureKeyframe, clearQuietTimer, submitAssistantQuestion, uploadUtteranceAsr]);
 
   const scheduleQuietWindow = useCallback(() => {
     clearQuietTimer();
@@ -1418,13 +1426,19 @@ export default function Home() {
       microphoneStreamRef.current = stream;
       setMicrophoneOn(true);
       setPhase("listening");
-      if (!asrBackendDisabledRef.current) {
+
+      if (asrBackendChoiceRef.current === "browser") {
+        asrBackendDisabledRef.current = true;
+        setAsrBackendState("active");
+        setAsrBackendMessage("使用浏览器语音识别。");
+        startBrowserRecognition();
+      } else {
+        asrBackendDisabledRef.current = false;
         setAsrBackendState("idle");
         setAsrBackendMessage("正在建立火山 ASR 会话。");
+        void openAsrSession();
       }
-      void openAsrSession();
       startAudioLevel(stream);
-      startBrowserRecognition();
     } catch (error) {
       setMicrophoneError(
         error instanceof Error ? error.message : "麦克风权限获取失败。",
@@ -1486,6 +1500,18 @@ export default function Home() {
   useEffect(() => {
     microphoneOnRef.current = microphoneOn;
   }, [microphoneOn]);
+
+  useEffect(() => {
+    cameraOnRef.current = cameraOn;
+  }, [cameraOn]);
+
+  useEffect(() => {
+    screenSharingOnRef.current = screenSharingOn;
+  }, [screenSharingOn]);
+
+  useEffect(() => {
+    asrBackendChoiceRef.current = asrBackendChoice;
+  }, [asrBackendChoice]);
 
   useEffect(() => {
     if (screenSharingOn && screenStreamRef.current && screenVideoRef.current) {
@@ -1624,9 +1650,25 @@ export default function Home() {
                   </div>
 
                   <div className="chat-input">
+                    <div className="asr-backend-toggle">
+                      <button
+                        className={`asr-backend-toggle__btn ${asrBackendChoice === "volcengine" ? "asr-backend-toggle__btn--active" : ""}`}
+                        type="button"
+                        onClick={() => setAsrBackendChoice("volcengine")}
+                      >
+                        火山 ASR
+                      </button>
+                      <button
+                        className={`asr-backend-toggle__btn ${asrBackendChoice === "browser" ? "asr-backend-toggle__btn--active" : ""}`}
+                        type="button"
+                        onClick={() => setAsrBackendChoice("browser")}
+                      >
+                        浏览器识别
+                      </button>
+                    </div>
                     <textarea
                       className="chat-input__field"
-                      value={manualTranscript}
+                      value={liveTranscript || manualTranscript}
                       onChange={(event) => setManualTranscript(event.target.value)}
                       placeholder="试试说：小噜，画面里有什么呀"
                       rows={2}
@@ -1635,7 +1677,7 @@ export default function Home() {
                       className="send-button"
                       type="button"
                       onClick={handleImmediateAsk}
-                      disabled={!manualTranscript.trim() && !wakeTranscript.trim()}
+                      disabled={!liveTranscript.trim() && !manualTranscript.trim() && !wakeTranscript.trim()}
                     >
                       <Icon name="icon-send" />
                     </button>
