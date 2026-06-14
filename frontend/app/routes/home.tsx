@@ -1633,7 +1633,6 @@ export default function Home() {
                       disabled={!manualTranscript.trim() && !wakeTranscript.trim()}
                     >
                       <Icon name="icon-send" />
-                      <span>发送</span>
                     </button>
                   </div>
 
