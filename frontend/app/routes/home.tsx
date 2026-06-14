@@ -70,10 +70,13 @@ declare global {
   }
 }
 
-const quietWindowMs = 2000;
-const asrChunkSeconds = 1.6;
+const quietWindowMs = 1000;
+const asrChunkSeconds = 0.32;
 const asrSampleRate = 16000;
 const maxUtteranceSeconds = 30;
+const maxKeyframeEdge = 768;
+const keyframeJpegQuality = 0.72;
+const authoritativeAsrBudgetMs = 450;
 const wakeWordPattern = /(小噜|小鹿|xiaolu|小路)/i;
 const defaultManualTranscript = "小噜，帮我看看画面里现在有什么重点";
 
@@ -254,6 +257,70 @@ function pcm16ToBase64(samples: Int16Array) {
   return btoa(binary);
 }
 
+function mergeAudioDataUrls(dataUrls: string[]) {
+  if (dataUrls.length === 0) {
+    return null;
+  }
+
+  if (dataUrls.length === 1) {
+    return dataUrls[0];
+  }
+
+  const audioChunks: Uint8Array[] = [];
+  let mimeType = "audio/mpeg";
+  let totalLength = 0;
+
+  for (const dataUrl of dataUrls) {
+    const match = dataUrl.match(/^data:([^;]+);base64,(.+)$/);
+    if (!match) {
+      return dataUrls[0];
+    }
+
+    mimeType = match[1] || mimeType;
+    const binary = atob(match[2]);
+    const bytes = new Uint8Array(binary.length);
+    for (let index = 0; index < binary.length; index += 1) {
+      bytes[index] = binary.charCodeAt(index);
+    }
+
+    audioChunks.push(bytes);
+    totalLength += bytes.length;
+  }
+
+  const merged = new Uint8Array(totalLength);
+  let offset = 0;
+  for (const bytes of audioChunks) {
+    merged.set(bytes, offset);
+    offset += bytes.length;
+  }
+
+  let binary = "";
+  const chunkSize = 0x8000;
+  for (let index = 0; index < merged.length; index += chunkSize) {
+    binary += String.fromCharCode(
+      ...merged.subarray(index, Math.min(index + chunkSize, merged.length)),
+    );
+  }
+
+  return `data:${mimeType};base64,${btoa(binary)}`;
+}
+
+function resolveWithTimeout<T>(promise: Promise<T>, timeoutMs: number, fallbackValue: T) {
+  return new Promise<T>((resolve) => {
+    const timeoutId = window.setTimeout(() => resolve(fallbackValue), timeoutMs);
+    promise.then(
+      (value) => {
+        window.clearTimeout(timeoutId);
+        resolve(value);
+      },
+      () => {
+        window.clearTimeout(timeoutId);
+        resolve(fallbackValue);
+      },
+    );
+  });
+}
+
 function computeWordOverlap(textA: string, textB: string): number {
   const wordsA = new Set(textA.split(/\s+/).filter(Boolean));
   const wordsB = new Set(textB.split(/\s+/).filter(Boolean));
@@ -338,6 +405,8 @@ export default function Home() {
   const audioLevelFrameRef = useRef<number | null>(null);
   const asrChunksRef = useRef<Float32Array[]>([]);
   const asrSampleCountRef = useRef(0);
+  const asrSessionIdRef = useRef<string | null>(null);
+  const asrChunkQueueRef = useRef<Array<{ pcm16Base64: string; sampleRate: number }>>([]);
   const asrUploadInFlightRef = useRef(false);
   const asrBackendDisabledRef = useRef(false);
   const utteranceAudioChunksRef = useRef<Float32Array[]>([]);
@@ -390,12 +459,92 @@ export default function Home() {
     audioSourceRef.current = null;
     asrChunksRef.current = [];
     asrSampleCountRef.current = 0;
+    asrChunkQueueRef.current = [];
     utteranceAudioChunksRef.current = [];
     utteranceSampleCountRef.current = 0;
     utteranceStartSampleRef.current = 0;
     void audioContextRef.current?.close();
     audioContextRef.current = null;
     setAudioLevel(0);
+  }, []);
+
+  const closeAsrSession = useCallback(async () => {
+    const sessionId = asrSessionIdRef.current;
+    asrSessionIdRef.current = null;
+    asrChunkQueueRef.current = [];
+
+    if (!sessionId || asrBackendDisabledRef.current) {
+      return;
+    }
+
+    try {
+      await fetch("/api/asr", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          action: "close",
+          sessionId,
+        }),
+      });
+    } catch {
+      // Ignore close races during teardown.
+    }
+  }, []);
+
+  const openAsrSession = useCallback(async () => {
+    if (asrBackendDisabledRef.current) {
+      return;
+    }
+
+    const sessionId = crypto.randomUUID();
+    asrSessionIdRef.current = sessionId;
+    asrChunkQueueRef.current = [];
+
+    try {
+      const response = await fetch("/api/asr", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          action: "start",
+          sampleRate: asrSampleRate,
+          sessionId,
+        }),
+      });
+      const data = (await response.json()) as AsrResponse;
+
+      if (!response.ok || data.error) {
+        throw new Error(data.error || `ASR session failed: ${response.status}`);
+      }
+
+      if (asrSessionIdRef.current !== sessionId) {
+        return;
+      }
+
+      setAsrBackendState("active");
+      setAsrBackendMessage("火山 ASR 会话已连接，正在实时转写。");
+    } catch (error) {
+      if (asrSessionIdRef.current !== sessionId) {
+        return;
+      }
+
+      const message =
+        error instanceof Error ? error.message : "火山 ASR 会话启动失败。";
+
+      if (message.includes("Missing VOLCENGINE_ASR_API_KEY")) {
+        asrBackendDisabledRef.current = true;
+        setAsrBackendState("unconfigured");
+        setAsrBackendMessage(
+          "未配置 VOLCENGINE_ASR_API_KEY，使用浏览器或手动转写。",
+        );
+      } else {
+        setAsrBackendState("error");
+        setAsrBackendMessage(message);
+      }
+    }
   }, []);
 
   const stopMicrophone = useCallback(() => {
@@ -408,6 +557,7 @@ export default function Home() {
     recognitionRef.current = null;
     microphoneStreamRef.current?.getTracks().forEach((track) => track.stop());
     microphoneStreamRef.current = null;
+    void closeAsrSession();
     stopAudioLevel();
     setMicrophoneOn(false);
     setPhase((currentPhase) =>
@@ -415,7 +565,7 @@ export default function Home() {
         ? "idle"
         : currentPhase,
     );
-  }, [stopAudioLevel]);
+  }, [closeAsrSession, stopAudioLevel]);
 
   const clearQuietTimer = useCallback(() => {
     if (quietTimerRef.current) {
@@ -442,8 +592,11 @@ export default function Home() {
       return null;
     }
 
-    const width = video.videoWidth || 1280;
-    const height = video.videoHeight || 720;
+    const sourceWidth = video.videoWidth || 1280;
+    const sourceHeight = video.videoHeight || 720;
+    const scale = Math.min(1, maxKeyframeEdge / Math.max(sourceWidth, sourceHeight));
+    const width = Math.max(320, Math.round(sourceWidth * scale));
+    const height = Math.max(180, Math.round(sourceHeight * scale));
     canvas.width = width;
     canvas.height = height;
 
@@ -453,7 +606,7 @@ export default function Home() {
     }
 
     context.drawImage(video, 0, 0, width, height);
-    return canvas.toDataURL("image/jpeg", 0.82);
+    return canvas.toDataURL("image/jpeg", keyframeJpegQuality);
   }, []);
 
   const appendMessage = useCallback((message: Omit<Message, "id">) => {
@@ -563,27 +716,142 @@ export default function Home() {
     const audioChunks: string[] = [];
     let currentAudio: HTMLAudioElement | null = null;
     let audioPlayIndex = 0;
+    let streamDone = false;
+    let autoplayBlocked = false;
+
+    const restoreReadyPhase = () => {
+      setPhase((prev) =>
+        prev === "error"
+          ? prev
+          : microphoneOnRef.current
+            ? "listening"
+            : "idle",
+      );
+    };
 
     const playNextAudio = () => {
-      if (audioPlayIndex < audioChunks.length) {
-        const chunk = audioChunks[audioPlayIndex++];
-        currentAudio = new Audio(chunk);
-        currentAudio.onended = () => {
-          currentAudio = null;
+      if (autoplayBlocked || currentAudio) {
+        return;
+      }
+
+      if (audioPlayIndex >= audioChunks.length) {
+        if (streamDone) {
+          restoreReadyPhase();
+        }
+        return;
+      }
+
+      const chunk = audioChunks[audioPlayIndex++];
+      currentAudio = new Audio(chunk);
+      currentAudio.onended = () => {
+        currentAudio = null;
+        playNextAudio();
+      };
+      currentAudio.onerror = () => {
+        currentAudio = null;
+        playNextAudio();
+      };
+      setPhase("speaking");
+      currentAudio.play().catch(() => {
+        autoplayBlocked = true;
+        currentAudio = null;
+        setAssistantError("浏览器阻止了自动播放，可使用消息里的音频控件播放。");
+        restoreReadyPhase();
+      });
+    };
+
+    const finalizeAudioMessage = () => {
+      const mergedAudio = mergeAudioDataUrls(audioChunks);
+      if (!mergedAudio) {
+        return;
+      }
+
+      setMessages((prev) =>
+        prev.map((m) =>
+          m.id === messageId ? { ...m, audioDataUrl: mergedAudio } : m,
+        ),
+      );
+    };
+
+    const applyStreamEvent = (event: Record<string, unknown>) => {
+      const type = event.type as string;
+
+      switch (type) {
+        case "text_delta": {
+          const delta = (event.text as string) ?? "";
+          fullText += delta;
+          setMessages((prev) =>
+            prev.map((m) =>
+              m.id === messageId ? { ...m, text: fullText } : m,
+            ),
+          );
+          break;
+        }
+        case "text_done": {
+          setMessages((prev) =>
+            prev.map((m) =>
+              m.id === messageId
+                ? { ...m, meta: `${formatClock()} · 小噜`, text: fullText }
+                : m,
+            ),
+          );
+          break;
+        }
+        case "audio": {
+          const audioData = (event.data as string) ?? "";
+          if (!audioData) {
+            break;
+          }
+
+          audioChunks.push(audioData);
+          if (audioChunks.length === 1) {
+            setMessages((prev) =>
+              prev.map((m) =>
+                m.id === messageId ? { ...m, audioDataUrl: audioData } : m,
+              ),
+            );
+          }
           playNextAudio();
-        };
-        currentAudio.onerror = () => {
-          currentAudio = null;
-          playNextAudio();
-        };
-        currentAudio.play().catch(() => {
-          currentAudio = null;
-          playNextAudio();
-        });
-      } else {
-        setPhase((prev) =>
-          prev === "speaking" && microphoneOnRef.current ? "listening" : prev === "speaking" ? "idle" : prev,
-        );
+          break;
+        }
+        case "tts_error": {
+          const errorMsg = (event.message as string) ?? "语音合成失败";
+          setAssistantError(errorMsg);
+          break;
+        }
+        case "error": {
+          const errorMsg = (event.message as string) ?? "Stream error";
+          setAssistantError(errorMsg);
+          setMessages((prev) =>
+            prev.map((m) =>
+              m.id === messageId
+                ? { ...m, text: fullText ? `${fullText}\n\n响应中断：${errorMsg}` : errorMsg }
+                : m,
+            ),
+          );
+          if (!fullText) {
+            setPhase("error");
+          }
+          break;
+        }
+        case "done": {
+          streamDone = true;
+          if (!fullText) {
+            setMessages((prev) =>
+              prev.map((m) =>
+                m.id === messageId ? { ...m, text: "我没有得到可用回答。" } : m,
+              ),
+            );
+          }
+          finalizeAudioMessage();
+          if (!audioChunks.length || !currentAudio) {
+            playNextAudio();
+            if (!audioChunks.length) {
+              restoreReadyPhase();
+            }
+          }
+          break;
+        }
       }
     };
 
@@ -602,81 +870,7 @@ export default function Home() {
           if (!dataStr) continue;
 
           try {
-            const event = JSON.parse(dataStr) as Record<string, unknown>;
-            const type = event.type as string;
-
-            switch (type) {
-              case "text_delta": {
-                const delta = (event.text as string) ?? "";
-                fullText += delta;
-                setMessages((prev) =>
-                  prev.map((m) =>
-                    m.id === messageId ? { ...m, text: fullText } : m,
-                  ),
-                );
-                break;
-              }
-              case "text_done": {
-                setMessages((prev) =>
-                  prev.map((m) =>
-                    m.id === messageId
-                      ? { ...m, meta: `${formatClock()} · 小噜`, text: fullText }
-                      : m,
-                  ),
-                );
-                break;
-              }
-              case "audio": {
-                const audioData = (event.data as string) ?? "";
-                if (audioData) {
-                  audioChunks.push(audioData);
-                  // Update message with first audio chunk for the player
-                  if (audioChunks.length === 1) {
-                    setPhase("speaking");
-                    setMessages((prev) =>
-                      prev.map((m) =>
-                        m.id === messageId
-                          ? { ...m, audioDataUrl: audioData }
-                          : m,
-                      ),
-                    );
-                    playNextAudio();
-                  }
-                }
-                break;
-              }
-              case "error": {
-                const errorMsg = (event.message as string) ?? "Stream error";
-                setAssistantError(errorMsg);
-                setMessages((prev) =>
-                  prev.map((m) =>
-                    m.id === messageId
-                      ? { ...m, text: fullText ? `${fullText}\n\n语音合成失败：${errorMsg}` : errorMsg }
-                      : m,
-                  ),
-                );
-                if (!fullText) setPhase("error");
-                break;
-              }
-              case "done": {
-                // Finalize
-                if (!fullText) {
-                  setMessages((prev) =>
-                    prev.map((m) =>
-                      m.id === messageId
-                        ? { ...m, text: "我没有得到可用回答。" }
-                        : m,
-                    ),
-                  );
-                }
-                if (!audioChunks.length) {
-                  setPhase((prev) =>
-                    prev === "speaking" ? (microphoneOnRef.current ? "listening" : "idle") : prev,
-                  );
-                }
-                break;
-              }
-            }
+            applyStreamEvent(JSON.parse(dataStr) as Record<string, unknown>);
           } catch {
             // Skip unparseable lines
           }
@@ -688,14 +882,7 @@ export default function Home() {
         const dataStr = buffer.slice(6).trim();
         if (dataStr) {
           try {
-            const event = JSON.parse(dataStr) as Record<string, unknown>;
-            if (event.type === "done") {
-              if (!audioChunks.length) {
-                setPhase((prev) =>
-                  prev === "speaking" ? (microphoneOnRef.current ? "listening" : "idle") : prev,
-                );
-              }
-            }
+            applyStreamEvent(JSON.parse(dataStr) as Record<string, unknown>);
           } catch {
             // skip
           }
@@ -714,6 +901,11 @@ export default function Home() {
             m.id === messageId ? { ...m, text: message } : m,
           ),
         );
+      }
+
+      streamDone = true;
+      if (!currentAudio) {
+        restoreReadyPhase();
       }
     }
   }
@@ -824,9 +1016,13 @@ export default function Home() {
       utteranceStartSampleRef.current = 0;
 
       if (utteranceAudio.length > 0) {
-        const authoritativeText = await uploadUtteranceAsr(
-          utteranceAudio,
-          utteranceSampleRateRef.current || asrSampleRate,
+        const authoritativeText = await resolveWithTimeout(
+          uploadUtteranceAsr(
+            utteranceAudio,
+            utteranceSampleRateRef.current || asrSampleRate,
+          ),
+          authoritativeAsrBudgetMs,
+          "",
         );
         if (authoritativeText) {
           const cleaned = stripWakeWord(authoritativeText);
@@ -996,60 +1192,95 @@ export default function Home() {
     }
   }, [handleRecognizedText]);
 
-  const uploadAsrChunk = useCallback(
-    async (samples: Float32Array, inputSampleRate: number) => {
-      if (asrBackendDisabledRef.current || asrUploadInFlightRef.current) {
+  const pumpAsrChunkQueue = useCallback(async () => {
+    if (asrBackendDisabledRef.current || asrUploadInFlightRef.current) {
+      return;
+    }
+
+    const nextChunk = asrChunkQueueRef.current.shift();
+    if (!nextChunk) {
+      return;
+    }
+
+    const sessionId = asrSessionIdRef.current;
+    asrUploadInFlightRef.current = true;
+    try {
+      const response = await fetch("/api/asr", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          action: "append",
+          pcm16Base64: nextChunk.pcm16Base64,
+          sampleRate: nextChunk.sampleRate,
+          sessionId,
+        }),
+      });
+      const data = (await response.json()) as AsrResponse;
+
+      if (!response.ok || data.error) {
+        throw new Error(data.error || `ASR request failed: ${response.status}`);
+      }
+
+      if (sessionId !== asrSessionIdRef.current && !microphoneOnRef.current) {
         return;
       }
 
-      asrUploadInFlightRef.current = true;
-      try {
-        const pcm = downsampleToPcm16(samples, inputSampleRate);
-        const response = await fetch("/api/asr", {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            pcm16Base64: pcm16ToBase64(pcm),
-            sampleRate: asrSampleRate,
-          }),
-        });
-        const data = (await response.json()) as AsrResponse;
+      setAsrBackendState("active");
+      setAsrBackendMessage(
+        data.text?.trim()
+          ? "火山 ASR 正在快速返回文本。"
+          : "火山 ASR 会话已连接，等待更多语音。",
+      );
 
-        if (!response.ok || data.error) {
-          throw new Error(data.error || `ASR request failed: ${response.status}`);
-        }
-
-        setAsrBackendState("active");
-        setAsrBackendMessage(
-          data.text?.trim()
-            ? "火山 ASR 已返回文本。"
-            : "火山 ASR 已连接，当前片段无文本。",
-        );
-
-        if (data.text?.trim()) {
-          handleRecognizedText(data.text.trim(), "volcengine-chunk");
-        }
-      } catch (error) {
-        const message =
-          error instanceof Error ? error.message : "火山 ASR 调用失败。";
-
-        if (message.includes("Missing VOLCENGINE_ASR_API_KEY")) {
-          asrBackendDisabledRef.current = true;
-          setAsrBackendState("unconfigured");
-          setAsrBackendMessage(
-            "未配置 VOLCENGINE_ASR_API_KEY，使用浏览器或手动转写。",
-          );
-        } else {
-          setAsrBackendState("error");
-          setAsrBackendMessage(message);
-        }
-      } finally {
-        asrUploadInFlightRef.current = false;
+      if (data.text?.trim()) {
+        handleRecognizedText(data.text.trim(), "volcengine-chunk");
       }
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : "火山 ASR 调用失败。";
+
+      if (
+        sessionId !== asrSessionIdRef.current &&
+        !microphoneOnRef.current &&
+        /closed|ended unexpectedly|timed out/i.test(message)
+      ) {
+        return;
+      }
+
+      if (message.includes("Missing VOLCENGINE_ASR_API_KEY")) {
+        asrBackendDisabledRef.current = true;
+        setAsrBackendState("unconfigured");
+        setAsrBackendMessage(
+          "未配置 VOLCENGINE_ASR_API_KEY，使用浏览器或手动转写。",
+        );
+      } else {
+        setAsrBackendState("error");
+        setAsrBackendMessage(message);
+      }
+    } finally {
+      asrUploadInFlightRef.current = false;
+      if (asrChunkQueueRef.current.length > 0) {
+        void pumpAsrChunkQueue();
+      }
+    }
+  }, [handleRecognizedText]);
+
+  const uploadAsrChunk = useCallback(
+    async (samples: Float32Array, inputSampleRate: number) => {
+      if (asrBackendDisabledRef.current) {
+        return;
+      }
+
+      const pcm = downsampleToPcm16(samples, inputSampleRate);
+      asrChunkQueueRef.current.push({
+        pcm16Base64: pcm16ToBase64(pcm),
+        sampleRate: asrSampleRate,
+      });
+      void pumpAsrChunkQueue();
     },
-    [handleRecognizedText],
+    [pumpAsrChunkQueue],
   );
 
   const startAudioLevel = useCallback((stream: MediaStream) => {
@@ -1059,6 +1290,7 @@ export default function Home() {
     }
 
     // Reset utterance accumulation on fresh mic start
+    asrChunkQueueRef.current = [];
     utteranceAudioChunksRef.current = [];
     utteranceSampleCountRef.current = 0;
     utteranceStartSampleRef.current = 0;
@@ -1179,8 +1411,9 @@ export default function Home() {
       setPhase("listening");
       if (!asrBackendDisabledRef.current) {
         setAsrBackendState("idle");
-        setAsrBackendMessage("火山 ASR 短片段识别已启动。");
+        setAsrBackendMessage("正在建立火山 ASR 会话。");
       }
+      void openAsrSession();
       startAudioLevel(stream);
       startBrowserRecognition();
     } catch (error) {
@@ -1189,7 +1422,7 @@ export default function Home() {
       );
       setMicrophoneOn(false);
     }
-  }, [startAudioLevel, startBrowserRecognition]);
+  }, [openAsrSession, startAudioLevel, startBrowserRecognition]);
 
   const handleManualTranscriptSubmit = useCallback(() => {
     handleRecognizedText(manualTranscript);

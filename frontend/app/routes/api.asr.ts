@@ -4,9 +4,13 @@ import { gunzipSync, gzipSync } from "node:zlib";
 
 import type { ActionFunctionArgs } from "react-router";
 
+type AsrSessionAction = "start" | "append" | "close";
+
 type AsrRequest = {
+  action?: AsrSessionAction;
   pcm16Base64?: string;
   sampleRate?: number;
+  sessionId?: string;
 };
 
 type AsrFrame = {
@@ -15,9 +19,25 @@ type AsrFrame = {
   payload: unknown;
 };
 
+type ConnectedAsrSocket = {
+  send: (data: Buffer) => void;
+  readNext: (timeoutMs?: number) => Promise<Buffer | null>;
+  readUntil: (predicate: (frame: Buffer) => boolean, timeoutMs?: number) => Promise<void>;
+  close: () => void;
+};
+
 const asrEndpoint =
   process.env.VOLCENGINE_ASR_ENDPOINT ??
   "wss://openspeech.bytedance.com/api/v3/sauc/bigmodel_async";
+const defaultAsrResourceId = "volc.seedasr.sauc.duration";
+const asrAudioPacketBytes = 3200;
+const asrSessionIdleMs = 3 * 60 * 1000;
+const asrStreamInitialWaitMs = 180;
+const asrStreamIdleWaitMs = 50;
+const asrStreamMaxWaitMs = 420;
+const asrAccelerateScore = 6;
+
+const streamingAsrSessions = new Map<string, StreamingAsrSession>();
 
 export async function action({ request }: ActionFunctionArgs) {
   if (request.method !== "POST") {
@@ -31,11 +51,22 @@ export async function action({ request }: ActionFunctionArgs) {
     return Response.json({ error: "Invalid JSON body" }, { status: 400 });
   }
 
-  if (!payload.pcm16Base64) {
-    return Response.json({ error: "pcm16Base64 is required" }, { status: 400 });
-  }
+  const sessionAction = normalizeAction(payload.action);
+  const sessionId = normalizeSessionId(payload.sessionId);
 
   try {
+    if (sessionAction && sessionId) {
+      return await handleStreamingSessionRequest({
+        action: sessionAction,
+        payload,
+        sessionId,
+      });
+    }
+
+    if (!payload.pcm16Base64) {
+      return Response.json({ error: "pcm16Base64 is required" }, { status: 400 });
+    }
+
     const audio = Buffer.from(payload.pcm16Base64, "base64");
     const text = await recognizePcm(audio, payload.sampleRate ?? 16000);
     return Response.json({ text });
@@ -44,6 +75,242 @@ export async function action({ request }: ActionFunctionArgs) {
       { error: error instanceof Error ? error.message : "ASR request failed" },
       { status: 502 },
     );
+  }
+}
+
+async function handleStreamingSessionRequest(options: {
+  action: AsrSessionAction;
+  payload: AsrRequest;
+  sessionId: string;
+}) {
+  const sampleRate = options.payload.sampleRate ?? 16000;
+
+  if (options.action === "start") {
+    await disposeStreamingSession(options.sessionId);
+    await getOrCreateStreamingSession(options.sessionId, sampleRate);
+    return Response.json({ started: true });
+  }
+
+  if (options.action === "append") {
+    if (!options.payload.pcm16Base64) {
+      return Response.json({ error: "pcm16Base64 is required" }, { status: 400 });
+    }
+
+    const session = await getOrCreateStreamingSession(options.sessionId, sampleRate);
+    const text = await session.append(Buffer.from(options.payload.pcm16Base64, "base64"));
+    return Response.json({ text });
+  }
+
+  await disposeStreamingSession(options.sessionId);
+  return Response.json({ closed: true });
+}
+
+async function getOrCreateStreamingSession(sessionId: string, sampleRate: number) {
+  const existingSession = streamingAsrSessions.get(sessionId);
+  if (existingSession) {
+    existingSession.touch();
+    return existingSession;
+  }
+
+  const session = await StreamingAsrSession.create({
+    onClose: () => {
+      const activeSession = streamingAsrSessions.get(sessionId);
+      if (activeSession === session) {
+        streamingAsrSessions.delete(sessionId);
+      }
+    },
+    sampleRate,
+  });
+
+  streamingAsrSessions.set(sessionId, session);
+  return session;
+}
+
+async function disposeStreamingSession(sessionId: string) {
+  const session = streamingAsrSessions.get(sessionId);
+  if (!session) {
+    return;
+  }
+
+  streamingAsrSessions.delete(sessionId);
+  await session.close();
+}
+
+class StreamingAsrSession {
+  private readonly onClose: () => void;
+  private readonly sampleRate: number;
+  private readonly socket: ConnectedAsrSocket;
+
+  private closed = false;
+  private idleTimer: NodeJS.Timeout | null = null;
+  private lastText = "";
+  private operationQueue = Promise.resolve();
+
+  private constructor(options: {
+    onClose: () => void;
+    sampleRate: number;
+    socket: ConnectedAsrSocket;
+  }) {
+    this.onClose = options.onClose;
+    this.sampleRate = options.sampleRate;
+    this.socket = options.socket;
+    this.scheduleIdleClose();
+  }
+
+  static async create(options: {
+    onClose: () => void;
+    sampleRate: number;
+  }) {
+    const apiKey = process.env.VOLCENGINE_ASR_API_KEY;
+    if (!apiKey) {
+      throw new Error("Missing VOLCENGINE_ASR_API_KEY");
+    }
+
+    const url = new URL(asrEndpoint);
+    const socket = await connectWebSocket(url, {
+      "X-Api-Key": apiKey,
+      "X-Api-Resource-Id":
+        process.env.VOLCENGINE_ASR_RESOURCE_ID ?? defaultAsrResourceId,
+      "X-Api-Request-Id": crypto.randomUUID(),
+      "X-Api-Connect-Id": crypto.randomUUID(),
+      "X-Api-Sequence": "-1",
+    });
+
+    const session = new StreamingAsrSession({
+      onClose: options.onClose,
+      sampleRate: options.sampleRate,
+      socket,
+    });
+
+    await session.initialize();
+    return session;
+  }
+
+  touch() {
+    this.scheduleIdleClose();
+  }
+
+  async append(audio: Buffer) {
+    return this.serialize(async () => {
+      this.ensureOpen();
+      this.scheduleIdleClose();
+
+      for (const chunk of splitAudioBuffer(audio, asrAudioPacketBytes)) {
+        this.socket.send(buildAsrPacket(0x2, 0x0, 0x0, 0x1, chunk));
+      }
+
+      return this.readLatestTextWindow();
+    });
+  }
+
+  async close() {
+    await this.serialize(async () => {
+      if (this.closed) {
+        return;
+      }
+
+      this.closed = true;
+      this.clearIdleTimer();
+
+      try {
+        this.socket.send(buildAsrPacket(0x2, 0x2, 0x0, 0x1, Buffer.alloc(0)));
+        await this.readLatestTextWindow(240, 60, 360).catch(() => "");
+      } catch {
+        // Ignore close-time read/send failures.
+      } finally {
+        this.socket.close();
+        this.onClose();
+      }
+    });
+  }
+
+  private async initialize() {
+    await this.serialize(async () => {
+      this.ensureOpen();
+
+      this.socket.send(
+        buildAsrPacket(0x1, 0x0, 0x1, 0x1, buildAsrRequestPayload({
+          mode: "streaming",
+          sampleRate: this.sampleRate,
+        })),
+      );
+
+      await this.readLatestTextWindow(120, 40, 240).catch(() => "");
+    });
+  }
+
+  private async readLatestTextWindow(
+    initialWaitMs = asrStreamInitialWaitMs,
+    idleWaitMs = asrStreamIdleWaitMs,
+    maxWaitMs = asrStreamMaxWaitMs,
+  ) {
+    let latestText = "";
+    const deadline = Date.now() + maxWaitMs;
+    let waitMs = initialWaitMs;
+
+    while (Date.now() < deadline) {
+      const remainingMs = Math.max(1, deadline - Date.now());
+      const frame = await this.socket.readNext(Math.min(waitMs, remainingMs));
+      if (!frame) {
+        break;
+      }
+
+      const parsed = parseAsrFrame(frame);
+      if (!parsed) {
+        waitMs = idleWaitMs;
+        continue;
+      }
+
+      if (parsed.messageType === 0xf) {
+        throw new Error(readAsrError(parsed.payload));
+      }
+
+      const text = extractText(parsed.payload);
+      if (text && text !== this.lastText) {
+        this.lastText = text;
+        latestText = text;
+      }
+
+      waitMs = idleWaitMs;
+    }
+
+    return latestText;
+  }
+
+  private clearIdleTimer() {
+    if (this.idleTimer) {
+      clearTimeout(this.idleTimer);
+      this.idleTimer = null;
+    }
+  }
+
+  private scheduleIdleClose() {
+    this.clearIdleTimer();
+    this.idleTimer = setTimeout(() => {
+      void this.close();
+    }, asrSessionIdleMs);
+  }
+
+  private ensureOpen() {
+    if (this.closed) {
+      throw new Error("ASR streaming session is closed");
+    }
+  }
+
+  private async serialize<T>(operation: () => Promise<T>) {
+    const previous = this.operationQueue;
+    let resolveCurrent: () => void = () => undefined;
+    this.operationQueue = new Promise<void>((resolve) => {
+      resolveCurrent = resolve;
+    });
+
+    await previous;
+
+    try {
+      return await operation();
+    } finally {
+      resolveCurrent();
+    }
   }
 }
 
@@ -57,7 +324,7 @@ async function recognizePcm(audio: Buffer, sampleRate: number) {
   const socket = await connectWebSocket(url, {
     "X-Api-Key": apiKey,
     "X-Api-Resource-Id":
-      process.env.VOLCENGINE_ASR_RESOURCE_ID ?? "volc.seedasr.sauc.duration",
+      process.env.VOLCENGINE_ASR_RESOURCE_ID ?? defaultAsrResourceId,
     "X-Api-Request-Id": crypto.randomUUID(),
     "X-Api-Connect-Id": crypto.randomUUID(),
     "X-Api-Sequence": "-1",
@@ -67,37 +334,15 @@ async function recognizePcm(audio: Buffer, sampleRate: number) {
 
   try {
     socket.send(
-      buildAsrPacket(0x1, 0x0, 0x1, 0x1, {
-        user: {
-          uid: process.env.VOLCENGINE_ASR_UID ?? "xiaolu-web",
-        },
-        audio: {
-          format: "pcm",
-          codec: "raw",
-          rate: sampleRate,
-          bits: 16,
-          channel: 1,
-          language: "zh-CN",
-        },
-        request: {
-          model_name: "bigmodel",
-          enable_itn: true,
-          enable_punc: true,
-          show_utterances: true,
-          corpus: {
-            context: JSON.stringify({
-              context_type: "dialog_ctx",
-              context_data: [{ text: "小噜和小鹿都是助手唤醒词。" }],
-            }),
-          },
-        },
-      }),
+      buildAsrPacket(0x1, 0x0, 0x1, 0x1, buildAsrRequestPayload({
+        mode: "oneshot",
+        sampleRate,
+      })),
     );
 
-    const chunkSize = 3200;
-    for (let offset = 0; offset < audio.length; offset += chunkSize) {
-      const chunk = audio.subarray(offset, Math.min(offset + chunkSize, audio.length));
-      const isLast = offset + chunkSize >= audio.length;
+    for (let offset = 0; offset < audio.length; offset += asrAudioPacketBytes) {
+      const chunk = audio.subarray(offset, Math.min(offset + asrAudioPacketBytes, audio.length));
+      const isLast = offset + asrAudioPacketBytes >= audio.length;
       socket.send(buildAsrPacket(0x2, isLast ? 0x2 : 0x0, 0x0, 0x1, chunk));
     }
 
@@ -113,8 +358,7 @@ async function recognizePcm(audio: Buffer, sampleRate: number) {
       frames.push(parsed);
 
       if (parsed.messageType === 0xf) {
-        const errorText = extractText(parsed.payload);
-        throw new Error(errorText || "Volcengine ASR returned an error frame");
+        throw new Error(readAsrError(parsed.payload));
       }
 
       return parsed.messageType === 0x9 && parsed.flags === 0x3;
@@ -127,12 +371,66 @@ async function recognizePcm(audio: Buffer, sampleRate: number) {
     .map((frame) => extractText(frame.payload))
     .filter(Boolean);
 
-  const text = texts.reduce(
+  return texts.reduce(
     (longest, current) => (current.length > longest.length ? current : longest),
     "",
   );
+}
 
-  return text;
+function buildAsrRequestPayload(options: {
+  mode: "streaming" | "oneshot";
+  sampleRate: number;
+}) {
+  const isStreaming = options.mode === "streaming";
+
+  return {
+    user: {
+      uid: process.env.VOLCENGINE_ASR_UID ?? "xiaolu-web",
+    },
+    audio: {
+      format: "pcm",
+      codec: "raw",
+      rate: options.sampleRate,
+      bits: 16,
+      channel: 1,
+      language: "zh-CN",
+    },
+    request: {
+      model_name: "bigmodel",
+      enable_itn: true,
+      enable_punc: true,
+      show_utterances: true,
+      result_type: isStreaming ? "single" : "full",
+      enable_accelerate_text: isStreaming,
+      accelerate_score: isStreaming ? asrAccelerateScore : 0,
+      end_window_size: isStreaming ? 500 : undefined,
+      force_to_speech_time: isStreaming ? 1000 : undefined,
+      corpus: {
+        context: JSON.stringify({
+          context_type: "dialog_ctx",
+          context_data: [{ text: "小噜和小鹿都是助手唤醒词。" }],
+        }),
+      },
+    },
+  };
+}
+
+function splitAudioBuffer(audio: Buffer, chunkSize: number) {
+  const chunks: Buffer[] = [];
+
+  for (let offset = 0; offset < audio.length; offset += chunkSize) {
+    chunks.push(audio.subarray(offset, Math.min(offset + chunkSize, audio.length)));
+  }
+
+  return chunks;
+}
+
+function normalizeAction(value: unknown): AsrSessionAction | null {
+  return value === "start" || value === "append" || value === "close" ? value : null;
+}
+
+function normalizeSessionId(value: unknown) {
+  return typeof value === "string" ? value.trim() : "";
 }
 
 function buildAsrPacket(
@@ -216,9 +514,9 @@ function extractText(payload: unknown): string {
     const utterances = resultRecord.utterances;
     if (Array.isArray(utterances)) {
       return utterances
-        .map((u) =>
-          u && typeof u === "object"
-            ? ((u as Record<string, unknown>).text as string) ?? ""
+        .map((utterance) =>
+          utterance && typeof utterance === "object"
+            ? ((utterance as Record<string, unknown>).text as string) ?? ""
             : "",
         )
         .filter(Boolean)
@@ -239,6 +537,20 @@ function extractText(payload: unknown): string {
   }
 
   return "";
+}
+
+function readAsrError(payload: unknown) {
+  if (!payload || typeof payload !== "object") {
+    return "Volcengine ASR returned an error frame";
+  }
+
+  const record = payload as Record<string, unknown>;
+  const message = record.message ?? record.error ?? record.msg;
+  if (typeof message === "string" && message.trim()) {
+    return message.trim();
+  }
+
+  return "Volcengine ASR returned an error frame";
 }
 
 async function connectWebSocket(url: URL, headers: Record<string, string>) {
@@ -280,13 +592,16 @@ async function connectWebSocket(url: URL, headers: Record<string, string>) {
     send(data: Buffer) {
       socket.write(encodeClientFrame(data));
     },
+    readNext(timeoutMs?: number) {
+      return parser.readNext(timeoutMs);
+    },
     readUntil(predicate: (frame: Buffer) => boolean, timeoutMs?: number) {
       return parser.readUntil(predicate, timeoutMs);
     },
     close() {
       socket.end();
     },
-  };
+  } satisfies ConnectedAsrSocket;
 }
 
 async function readHandshake(socket: tls.TLSSocket) {
@@ -294,6 +609,9 @@ async function readHandshake(socket: tls.TLSSocket) {
 
   while (!buffer.includes("\r\n\r\n")) {
     const chunk = await readSocketChunk(socket);
+    if (!chunk) {
+      throw new Error("ASR WebSocket upgrade timed out");
+    }
     buffer = Buffer.concat([buffer, chunk]);
   }
 
@@ -311,7 +629,9 @@ async function readHandshake(socket: tls.TLSSocket) {
 function createFrameParser(socket: tls.TLSSocket, initialBuffer: Buffer) {
   let buffer = initialBuffer;
 
-  async function readFrame(): Promise<Buffer> {
+  async function readFrame(timeoutMs?: number): Promise<Buffer | null> {
+    const deadline = timeoutMs === undefined ? null : Date.now() + timeoutMs;
+
     while (true) {
       const parsed = tryReadFrame(buffer);
       if (parsed) {
@@ -330,20 +650,39 @@ function createFrameParser(socket: tls.TLSSocket, initialBuffer: Buffer) {
         return parsed.payload;
       }
 
-      const chunk = await readSocketChunk(socket);
+      const remainingMs =
+        deadline === null ? undefined : Math.max(0, deadline - Date.now());
+      if (remainingMs === 0) {
+        return null;
+      }
+
+      const chunk = await readSocketChunk(socket, remainingMs);
+      if (!chunk) {
+        return null;
+      }
+
       buffer = Buffer.concat([buffer, chunk]);
     }
   }
 
   return {
+    readNext(timeoutMs?: number) {
+      return readFrame(timeoutMs);
+    },
     async readUntil(predicate: (frame: Buffer) => boolean, timeoutMs = 12000) {
-      const timeoutAt = Date.now() + timeoutMs;
-      while (Date.now() < timeoutAt) {
-        const frame = await readFrame();
+      const deadline = Date.now() + timeoutMs;
+
+      while (Date.now() < deadline) {
+        const frame = await readFrame(Math.max(1, deadline - Date.now()));
+        if (!frame) {
+          break;
+        }
+
         if (predicate(frame)) {
           return;
         }
       }
+
       throw new Error("ASR WebSocket timed out");
     },
   };
@@ -441,8 +780,10 @@ function writeMaskedPayload(
   }
 }
 
-function readSocketChunk(socket: tls.TLSSocket) {
-  return new Promise<Buffer>((resolve, reject) => {
+function readSocketChunk(socket: tls.TLSSocket, timeoutMs?: number) {
+  return new Promise<Buffer | null>((resolve, reject) => {
+    let timer: NodeJS.Timeout | null = null;
+
     const handleData = (chunk: Buffer) => {
       cleanup();
       resolve(chunk);
@@ -455,14 +796,25 @@ function readSocketChunk(socket: tls.TLSSocket) {
       cleanup();
       reject(new Error("ASR WebSocket ended unexpectedly"));
     };
+    const handleTimeout = () => {
+      cleanup();
+      resolve(null);
+    };
     const cleanup = () => {
       socket.off("data", handleData);
       socket.off("error", handleError);
       socket.off("end", handleEnd);
+      if (timer) {
+        clearTimeout(timer);
+      }
     };
 
     socket.once("data", handleData);
     socket.once("error", handleError);
     socket.once("end", handleEnd);
+
+    if (timeoutMs !== undefined) {
+      timer = setTimeout(handleTimeout, timeoutMs);
+    }
   });
 }
