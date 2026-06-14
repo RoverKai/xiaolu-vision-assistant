@@ -440,6 +440,7 @@ export default function Home() {
   }, []);
 
   const startScreenShare = useCallback(async () => {
+    stopCamera();
     try {
       const stream = await navigator.mediaDevices.getDisplayMedia({
         video: true,
@@ -451,7 +452,7 @@ export default function Home() {
     } catch {
       // user cancelled
     }
-  }, [stopScreenShare]);
+  }, [stopCamera, stopScreenShare]);
 
   const stopAudioLevel = useCallback(() => {
     if (audioLevelFrameRef.current) {
@@ -1389,6 +1390,7 @@ export default function Home() {
 
   const startCamera = useCallback(async () => {
     setCameraError("");
+    stopScreenShare();
 
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
@@ -1411,7 +1413,7 @@ export default function Home() {
       );
       setCameraOn(false);
     }
-  }, []);
+  }, [stopScreenShare]);
 
   const startMicrophone = useCallback(async () => {
     setMicrophoneError("");
@@ -1563,79 +1565,30 @@ export default function Home() {
             <main className="content-area content-area--assistant">
               <section className="voice-workspace" aria-label="视觉语音助手工作台">
 
-                {/* Video grid: spans left + middle, row 1 */}
-                <div className="video-grid-area">
-                  <div className="video-grid" data-count={cameraOn ? "1" : "0"}>
-                    <div className="video-item">
-                      <video ref={videoRef} className="camera-preview" autoPlay muted playsInline />
-                      {!cameraOn && (
-                        <div className="camera-placeholder">
-                          <Icon name="icon-camera" />
-                          <span>未接入</span>
-                        </div>
-                      )}
+                {/* Unified video panel: camera or screen sharing (mutually exclusive) */}
+                <div className="video-panel">
+                  {cameraOn ? (
+                    <div className="video-grid" data-count="1">
+                      <div className="video-item">
+                        <video ref={videoRef} className="camera-preview" autoPlay muted playsInline />
+                      </div>
                     </div>
-                  </div>
+                  ) : screenSharingOn ? (
+                    <div className="video-grid" data-count="1">
+                      <div className="video-item">
+                        <video ref={screenVideoRef} className="share-preview" autoPlay muted playsInline />
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="video-panel-placeholder">
+                      <Icon name="icon-camera" />
+                      <span>摄像头或屏幕共享未接入</span>
+                    </div>
+                  )}
                   <canvas ref={canvasRef} className="capture-canvas" />
                 </div>
 
-                {/* Screen share / Keyframe: left column, row 2 */}
-                <div className="keyframe-area">
-                  <div className="keyframe-strip">
-                    <div className="keyframe-preview">
-                      {screenSharingOn ? (
-                        <video ref={screenVideoRef} className="share-preview" autoPlay muted playsInline />
-                      ) : lastKeyframe ? (
-                        <img src={lastKeyframe} alt="最近关键帧" />
-                      ) : (
-                        <span>—</span>
-                      )}
-                    </div>
-                    <div className="keyframe-meta">
-                      <strong>屏幕共享</strong>
-                      <span>{screenSharingOn ? "共享中" : "未共享"}</span>
-                    </div>
-                  </div>
-                </div>
-
-                {/* Character area: middle column, row 2 */}
-                <div className="character-area">
-                  <div className="character-avatar">
-                    <div className="character-avatar__circle">
-                      <Icon name="icon-microphone" />
-                    </div>
-                    <div className="voice-meter" aria-label="麦克风音量">
-                      <span style={{ transform: `scaleX(${Math.max(audioLevel, 0.04)})` }} />
-                    </div>
-                  </div>
-                  <p className="character-label">{microphoneOn ? "正在听…" : "说\"小噜\"唤醒我"}</p>
-                  {liveTranscript && <p className="character-transcript">{liveTranscript}</p>}
-                  <textarea
-                    className="character-input"
-                    value={manualTranscript}
-                    onChange={(event) => setManualTranscript(event.target.value)}
-                    placeholder="或输入文字…"
-                    rows={2}
-                  />
-                  <button
-                    className="send-button"
-                    type="button"
-                    onClick={handleImmediateAsk}
-                    disabled={!manualTranscript.trim() && !wakeTranscript.trim()}
-                  >
-                    <Icon name="icon-send" />
-                    <span>发送</span>
-                  </button>
-                  {(cameraError || microphoneError || assistantError) && (
-                    <div className="error-stack">
-                      {cameraError && <p>{cameraError}</p>}
-                      {microphoneError && <p>{microphoneError}</p>}
-                      {assistantError && <p>{assistantError}</p>}
-                    </div>
-                  )}
-                </div>
-
-                {/* Chat: right column, rows 1-2 */}
+                {/* Chat: right column */}
                 <div className="chat-area">
                   <div className="panel-header">
                     <div>
@@ -1669,6 +1622,33 @@ export default function Home() {
                       </article>
                     ))}
                   </div>
+
+                  <div className="chat-input">
+                    <textarea
+                      className="chat-input__field"
+                      value={manualTranscript}
+                      onChange={(event) => setManualTranscript(event.target.value)}
+                      placeholder="输入文字…"
+                      rows={2}
+                    />
+                    <button
+                      className="send-button"
+                      type="button"
+                      onClick={handleImmediateAsk}
+                      disabled={!manualTranscript.trim() && !wakeTranscript.trim()}
+                    >
+                      <Icon name="icon-send" />
+                      <span>发送</span>
+                    </button>
+                  </div>
+
+                  {(cameraError || microphoneError || assistantError) && (
+                    <div className="error-stack">
+                      {cameraError && <p>{cameraError}</p>}
+                      {microphoneError && <p>{microphoneError}</p>}
+                      {assistantError && <p>{assistantError}</p>}
+                    </div>
+                  )}
                 </div>
 
               </section>
@@ -1743,10 +1723,6 @@ export default function Home() {
                     <Icon name="icon-check" />
                   </span>
                   <span className="control-button__label">重置会话</span>
-                </button>
-                <button className="end-button" type="button" onClick={stopMicrophone}>
-                  <Icon name="icon-phone-off" />
-                  <span>结束收听</span>
                 </button>
               </div>
             </footer>
