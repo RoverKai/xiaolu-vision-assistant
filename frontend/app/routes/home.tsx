@@ -1048,7 +1048,7 @@ export default function Home() {
     }
 
     await submitAssistantQuestion(question, keyframe);
-  }, [cameraOn, captureKeyframe, clearQuietTimer, submitAssistantQuestion, uploadUtteranceAsr]);
+  }, [cameraOn, screenSharingOn, captureKeyframe, clearQuietTimer, submitAssistantQuestion, uploadUtteranceAsr]);
 
   const scheduleQuietWindow = useCallback(() => {
     clearQuietTimer();
@@ -1497,6 +1497,7 @@ export default function Home() {
   useEffect(() => {
     if (screenSharingOn && screenStreamRef.current && screenVideoRef.current) {
       screenVideoRef.current.srcObject = screenStreamRef.current;
+      screenVideoRef.current.play().catch(() => undefined);
     }
     return () => {
       if (screenVideoRef.current) {
