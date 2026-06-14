@@ -427,7 +427,17 @@ export default function Home() {
     const video = videoRef.current;
     const canvas = canvasRef.current;
 
-    if (!video || !canvas || video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) {
+    if (!video || !canvas) {
+      console.warn("[captureKeyframe] video or canvas ref is null");
+      return null;
+    }
+
+    if (video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) {
+      console.warn(
+        "[captureKeyframe] video readyState too low:",
+        video.readyState,
+        "(need >= HAVE_CURRENT_DATA)",
+      );
       return null;
     }
 
@@ -590,6 +600,11 @@ export default function Home() {
 
     setPhase("capturing");
     const keyframe = cameraOn ? captureKeyframe() : null;
+    if (cameraOn && !keyframe) {
+      console.warn(
+        "[finalizeWakeQuestion] camera is on but keyframe capture returned null",
+      );
+    }
     setLastKeyframe(keyframe);
 
     // Send accumulated utterance audio for authoritative ASR result
@@ -720,9 +735,15 @@ export default function Home() {
     recognition.continuous = true;
     recognition.interimResults = true;
     recognition.onresult = (event) => {
-      // Suppress results during non-listening phases (e.g. TTS playback)
+      // Suppress results during phases where TTS/assistant is active
       const currentPhase = phaseRef.current;
-      if (currentPhase !== "listening") {
+      const suppressedPhases: AssistantPhase[] = [
+        "capturing",
+        "thinking",
+        "speaking",
+        "error",
+      ];
+      if (suppressedPhases.includes(currentPhase)) {
         return;
       }
 
