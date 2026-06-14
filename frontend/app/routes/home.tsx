@@ -585,21 +585,12 @@ export default function Home() {
     }
   }, []);
 
-  const captureKeyframe = useCallback(() => {
-    const video = videoRef.current;
+  const captureKeyframe = useCallback((source: "camera" | "screen" = "camera") => {
+    const video = source === "screen" ? screenVideoRef.current : videoRef.current;
     const canvas = canvasRef.current;
 
     if (!video || !canvas) {
       console.warn("[captureKeyframe] video or canvas ref is null");
-      return null;
-    }
-
-    if (video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) {
-      console.warn(
-        "[captureKeyframe] video readyState too low:",
-        video.readyState,
-        "(need >= HAVE_CURRENT_DATA)",
-      );
       return null;
     }
 
@@ -1013,10 +1004,14 @@ export default function Home() {
     }
 
     setPhase("capturing");
-    const keyframe = cameraOn ? captureKeyframe() : null;
-    if (cameraOn && !keyframe) {
+    const keyframe = cameraOn
+      ? captureKeyframe("camera")
+      : screenSharingOn
+        ? captureKeyframe("screen")
+        : null;
+    if ((cameraOn || screenSharingOn) && !keyframe) {
       console.warn(
-        "[finalizeWakeQuestion] camera is on but keyframe capture returned null",
+        "[finalizeWakeQuestion] video source is on but keyframe capture returned null",
       );
     }
     setLastKeyframe(keyframe);
@@ -1616,7 +1611,6 @@ export default function Home() {
                           <audio
                             className="message-card__audio"
                             src={message.audioDataUrl}
-                            controls
                           />
                         )}
                       </article>
