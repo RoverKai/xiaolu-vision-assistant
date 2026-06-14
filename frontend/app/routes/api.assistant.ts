@@ -47,6 +47,9 @@ const volcengineEventSessionFailed = 153;
 const volcengineEventTtsSentenceStart = 350;
 const volcengineEventTtsSentenceEnd = 351;
 const volcengineEventTtsResponse = 352;
+const streamingTtsConcurrency = 2;
+const streamingTtsSoftBreakMinChars = 18;
+const streamingTtsHardBreakMaxChars = 32;
 
 export async function action({ request }: ActionFunctionArgs) {
   if (request.method !== "POST") {
@@ -150,17 +153,42 @@ async function streamAssistantResponse(options: {
   const stream = new ReadableStream({
     async start(controller) {
       const encoder = new TextEncoder();
+      let streamClosed = false;
       const writeSSE = (data: Record<string, unknown>) => {
+        if (streamClosed) {
+          return;
+        }
         controller.enqueue(
           encoder.encode(`data: ${JSON.stringify(data)}\n\n`),
         );
       };
+      const closeStream = () => {
+        if (streamClosed) {
+          return;
+        }
+
+        streamClosed = true;
+        controller.close();
+      };
+      const ttsApiKey = process.env.VOLCENGINE_TTS_API_KEY;
+      const ttsStreamer = ttsApiKey
+        ? createStreamingTtsSink({
+            concurrency: streamingTtsConcurrency,
+            onAudio: (audioDataUrl) => {
+              writeSSE({ type: "audio", data: audioDataUrl });
+            },
+            onError: (message) => {
+              writeSSE({ type: "tts_error", message });
+            },
+          })
+        : null;
 
       try {
         const reader = arkResponse.body!.getReader();
         const decoder = new TextDecoder();
         let buffer = "";
         let fullText = "";
+        let pendingSpeechText = "";
 
         // Read Ark SSE stream
         while (true) {
@@ -184,6 +212,15 @@ async function streamAssistantResponse(options: {
                 const delta = (event.delta as string) ?? "";
                 if (delta) {
                   fullText += delta;
+                  if (ttsStreamer) {
+                    pendingSpeechText += delta;
+                    const { segments, remaining } =
+                      splitReadySpeechSegments(pendingSpeechText);
+                    pendingSpeechText = remaining;
+                    for (const segment of segments) {
+                      ttsStreamer.enqueue(segment);
+                    }
+                  }
                   writeSSE({ type: "text_delta", text: delta });
                 }
               } else if (type === "response.completed") {
@@ -195,7 +232,7 @@ async function streamAssistantResponse(options: {
                     details?.error as Record<string, unknown> | undefined;
                   const statusMsg = errorObj?.message ?? response.status;
                   writeSSE({ type: "error", message: String(statusMsg) });
-                  controller.close();
+                  closeStream();
                   return;
                 }
               }
@@ -214,6 +251,15 @@ async function streamAssistantResponse(options: {
               const delta = (event.delta as string) ?? "";
               if (delta) {
                 fullText += delta;
+                if (ttsStreamer) {
+                  pendingSpeechText += delta;
+                  const { segments, remaining } =
+                    splitReadySpeechSegments(pendingSpeechText);
+                  pendingSpeechText = remaining;
+                  for (const segment of segments) {
+                    ttsStreamer.enqueue(segment);
+                  }
+                }
                 writeSSE({ type: "text_delta", text: delta });
               }
             } catch {
@@ -227,24 +273,21 @@ async function streamAssistantResponse(options: {
             type: "error",
             message: "Ark response did not include output text",
           });
-          controller.close();
+          closeStream();
           return;
+        }
+
+        if (ttsStreamer && pendingSpeechText.trim()) {
+          const { segments } = splitReadySpeechSegments(pendingSpeechText, true);
+          for (const segment of segments) {
+            ttsStreamer.enqueue(segment);
+          }
         }
 
         writeSSE({ type: "text_done" });
 
-        // Per-sentence TTS synthesis
-        const sentences = splitSentences(fullText);
-        const ttsApiKey = process.env.VOLCENGINE_TTS_API_KEY;
-
-        if (ttsApiKey && sentences.length > 0) {
-          const concurrency = 2;
-          const audioChunks = await synthesizeSentences(sentences, concurrency);
-          for (const chunk of audioChunks) {
-            if (chunk) {
-              writeSSE({ type: "audio", data: chunk });
-            }
-          }
+        if (ttsStreamer) {
+          await ttsStreamer.flush();
         }
 
         writeSSE({ type: "done" });
@@ -254,7 +297,7 @@ async function streamAssistantResponse(options: {
           message: error instanceof Error ? error.message : "Stream failed",
         });
       } finally {
-        controller.close();
+        closeStream();
       }
     },
   });
@@ -268,36 +311,153 @@ async function streamAssistantResponse(options: {
   });
 }
 
-function splitSentences(text: string): string[] {
-  const sentences = text.split(/(?<=[。！？\n])\s*/);
-  return sentences.map((s) => s.trim()).filter(Boolean);
+function splitReadySpeechSegments(text: string, flush = false) {
+  const hardBreakChars = new Set(["。", "！", "？", "!", "?", "；", ";", "\n"]);
+  const softBreakChars = new Set(["，", ",", "、", "：", ":"]);
+  const segments: string[] = [];
+  let current = "";
+  let currentChars = 0;
+
+  const emitCurrent = () => {
+    const segment = current.trim();
+    if (segment) {
+      segments.push(segment);
+    }
+    current = "";
+    currentChars = 0;
+  };
+
+  for (const char of text) {
+    current += char;
+    if (!/\s/u.test(char)) {
+      currentChars += 1;
+    }
+
+    if (hardBreakChars.has(char)) {
+      emitCurrent();
+      continue;
+    }
+
+    if (
+      softBreakChars.has(char) &&
+      currentChars >= streamingTtsSoftBreakMinChars
+    ) {
+      emitCurrent();
+      continue;
+    }
+
+    if (currentChars >= streamingTtsHardBreakMaxChars) {
+      emitCurrent();
+    }
+  }
+
+  if (flush) {
+    emitCurrent();
+  }
+
+  return {
+    segments,
+    remaining: flush ? "" : current,
+  };
 }
 
-async function synthesizeSentences(
-  sentences: string[],
-  concurrency: number,
-): Promise<(string | null)[]> {
-  const results: (string | null)[] = new Array(sentences.length).fill(null);
-  let index = 0;
+function createStreamingTtsSink(options: {
+  concurrency: number;
+  onAudio: (audioDataUrl: string) => void;
+  onError: (message: string) => void;
+}) {
+  const queue: Array<{ index: number; text: string }> = [];
+  const pending = new Map<number, Promise<string | null>>();
+  let nextIndex = 0;
+  let nextToEmit = 0;
+  let inFlight = 0;
+  let draining = false;
+  let closed = false;
+  let resolveIdle: (() => void) | null = null;
 
-  const worker = async () => {
-    while (index < sentences.length) {
-      const currentIndex = index++;
-      try {
-        results[currentIndex] = await requestVolcengineTts(
-          sentences[currentIndex],
-        );
-      } catch {
-        results[currentIndex] = null;
-      }
+  const idlePromise = new Promise<void>((resolve) => {
+    resolveIdle = resolve;
+  });
+
+  const maybeResolveIdle = () => {
+    if (
+      closed &&
+      queue.length === 0 &&
+      inFlight === 0 &&
+      pending.size === 0 &&
+      resolveIdle
+    ) {
+      resolveIdle();
+      resolveIdle = null;
     }
   };
 
-  const workers = Array.from({ length: Math.min(concurrency, sentences.length) }, () =>
-    worker(),
-  );
-  await Promise.all(workers);
-  return results;
+  const drain = async () => {
+    if (draining) {
+      return;
+    }
+
+    draining = true;
+    try {
+      while (pending.has(nextToEmit)) {
+        const audioDataUrl = await pending.get(nextToEmit)!;
+        pending.delete(nextToEmit);
+        nextToEmit += 1;
+
+        if (audioDataUrl) {
+          options.onAudio(audioDataUrl);
+        }
+      }
+    } finally {
+      draining = false;
+      maybeResolveIdle();
+    }
+  };
+
+  const schedule = () => {
+    while (inFlight < options.concurrency && queue.length > 0) {
+      const item = queue.shift()!;
+      inFlight += 1;
+
+      const requestPromise = requestVolcengineTts(item.text)
+        .catch((error) => {
+          const message =
+            error instanceof Error ? error.message : "TTS synthesis failed";
+          options.onError(message);
+          return null;
+        })
+        .finally(() => {
+          inFlight -= 1;
+          schedule();
+          maybeResolveIdle();
+        });
+
+      pending.set(item.index, requestPromise);
+      void drain();
+    }
+
+    maybeResolveIdle();
+  };
+
+  return {
+    enqueue(text: string) {
+      const cleanText = text.trim();
+      if (!cleanText) {
+        return;
+      }
+
+      queue.push({
+        index: nextIndex++,
+        text: cleanText,
+      });
+      schedule();
+    },
+    async flush() {
+      closed = true;
+      schedule();
+      await idlePromise;
+    },
+  };
 }
 
 function normalizeText(value: unknown) {
@@ -380,7 +540,8 @@ function buildPrompt({
 
   return [
     "你是小噜，一个多人场景中的视觉语音助手。请基于用户刚才说的话和随附的摄像头关键帧回答。",
-    "回答要直接、简短、使用中文。若画面不足以判断，请明确说明不确定，并给出下一步需要用户补充的信息。",
+    "回答要像实时语音助手一样快而自然，优先直接回答用户问题，默认控制在 1 到 2 句、45 个字以内。",
+    "除非用户明确要求详细描述，否则不要重复长篇画面说明。若画面不足以判断，请用一句话说明不确定点，并只追问一个最关键的信息。",
     recentHistory ? `最近对话：\n${recentHistory}` : "",
     prompt ? `当前文字输入：${prompt}` : "",
     transcript ? `语音转写：${transcript}` : "",
