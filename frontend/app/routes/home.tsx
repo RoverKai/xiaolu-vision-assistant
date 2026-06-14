@@ -1556,47 +1556,38 @@ export default function Home() {
 
                 {/* Video grid: spans left + middle, row 1 */}
                 <div className="video-grid-area">
-                  {(() => {
-                    const count = (cameraOn ? 1 : 0) + (screenSharingOn ? 1 : 0);
-                    return (
-                      <div className="video-grid" data-count={String(count)}>
-                        {!cameraOn && !screenSharingOn && (
-                          <div className="video-item">
-                            <div className="camera-placeholder">
-                              <Icon name="icon-camera" />
-                              <span>未接入</span>
-                            </div>
-                          </div>
-                        )}
-                        {cameraOn && (
-                          <div className="video-item">
-                            <video ref={videoRef} className="camera-preview" autoPlay muted playsInline />
-                          </div>
-                        )}
-                        {screenSharingOn && (
-                          <div className="video-item">
-                            <video ref={screenVideoRef} className="camera-preview" autoPlay muted playsInline />
-                          </div>
-                        )}
+                  <div className="video-grid" data-count={cameraOn ? "1" : "0"}>
+                    {cameraOn ? (
+                      <div className="video-item">
+                        <video ref={videoRef} className="camera-preview" autoPlay muted playsInline />
                       </div>
-                    );
-                  })()}
+                    ) : (
+                      <div className="video-item">
+                        <div className="camera-placeholder">
+                          <Icon name="icon-camera" />
+                          <span>未接入</span>
+                        </div>
+                      </div>
+                    )}
+                  </div>
                   <canvas ref={canvasRef} className="capture-canvas" />
                 </div>
 
-                {/* Keyframe: left column, row 2 */}
+                {/* Screen share / Keyframe: left column, row 2 */}
                 <div className="keyframe-area">
                   <div className="keyframe-strip">
                     <div className="keyframe-preview">
-                      {lastKeyframe ? (
+                      {screenSharingOn ? (
+                        <video ref={screenVideoRef} className="share-preview" autoPlay muted playsInline />
+                      ) : lastKeyframe ? (
                         <img src={lastKeyframe} alt="最近关键帧" />
                       ) : (
-                        <span>暂无关键帧</span>
+                        <span>—</span>
                       )}
                     </div>
                     <div className="keyframe-meta">
                       <strong>屏幕共享</strong>
-                      <span>{lastKeyframe ? "共享中" : "未共享"}</span>
+                      <span>{screenSharingOn ? "共享中" : "未共享"}</span>
                     </div>
                   </div>
                 </div>
