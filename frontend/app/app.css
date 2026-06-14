@@ -2268,7 +2268,7 @@ input {
   position: relative;
   z-index: var(--z-stage);
   display: grid;
-  grid-template-columns: 4fr 3fr 3fr;
+  grid-template-columns: 7fr 3fr;
   gap: var(--space-4);
   min-height: 0;
 }
@@ -2655,17 +2655,6 @@ input {
 .message-card__audio {
   width: 100%;
   margin-top: var(--space-3);
-}
-
-@media (max-width: 1540px) {
-  .voice-workspace {
-    grid-template-columns: 1fr 1fr;
-  }
-
-  .assistant-log {
-    grid-column: 1 / -1;
-    max-height: none;
-  }
 }
 
 @media (max-width: 920px) {
