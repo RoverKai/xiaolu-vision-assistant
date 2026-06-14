@@ -77,8 +77,8 @@ const maxUtteranceSeconds = 30;
 const maxKeyframeEdge = 768;
 const keyframeJpegQuality = 0.72;
 const authoritativeAsrBudgetMs = 450;
-const wakeWordPattern = /(小噜|小鹿|xiaolu|小路)/i;
-const defaultManualTranscript = "小噜，帮我看看画面里现在有什么重点";
+const wakeWordPattern = /(小噜|小鹿|xiaolu|小路)，?/i;
+const defaultManualTranscript = "";
 
 const initialMessages: Message[] = [];
 
@@ -1628,7 +1628,7 @@ export default function Home() {
                       className="chat-input__field"
                       value={manualTranscript}
                       onChange={(event) => setManualTranscript(event.target.value)}
-                      placeholder="输入文字…"
+                      placeholder="试试说：小噜，画面里有什么呀"
                       rows={2}
                     />
                     <button
