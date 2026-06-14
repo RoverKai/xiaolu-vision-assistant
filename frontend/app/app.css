@@ -217,20 +217,17 @@ input {
 }
 
 .prototype-shell {
-  min-height: 100vh;
-  padding: 20px;
+  width: 100vw;
+  height: 100vh;
+  padding: 0;
 }
 
 .app-surface {
-  width: min(100%, 1892px);
-  height: min(calc(100vh - 40px), 1080px);
-  margin: 0 auto;
+  width: 100%;
+  height: 100%;
   position: relative;
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-2xl);
   overflow: hidden;
   background: var(--surface-app);
-  box-shadow: var(--shadow-shell);
 }
 
 .meeting-shell {
@@ -2268,8 +2265,8 @@ input {
   position: relative;
   z-index: var(--z-stage);
   display: grid;
-  grid-template-columns: 7fr 3fr;
-  gap: var(--space-4);
+  grid-template-columns: 4fr 3fr 3fr;
+  gap: 0;
   min-height: 0;
 }
 
@@ -2280,11 +2277,15 @@ input {
   min-height: 0;
   display: flex;
   flex-direction: column;
-  border: 1px solid var(--border-strong);
-  border-radius: var(--radius-xl);
-  background: var(--surface-glass-strong);
-  box-shadow: var(--shadow-sm);
   overflow: hidden;
+}
+
+.vision-panel {
+  border-right: 1px solid var(--line);
+}
+
+.voice-panel {
+  border-right: 1px solid var(--line);
 }
 
 /* Vision panel 7:3 vertical split */

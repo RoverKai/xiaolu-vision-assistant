@@ -1581,6 +1581,73 @@ export default function Home() {
                   <canvas ref={canvasRef} className="capture-canvas" />
                 </section>
 
+                <section className="voice-panel">
+                  <div className="panel-header">
+                    <div>
+                      <p className="panel-eyebrow">语音输入</p>
+                      <h2>转写</h2>
+                    </div>
+                    <span
+                      className={`status-chip${microphoneOn ? " status-chip--live" : ""}`}
+                    >
+                      {microphoneOn ? "收听中" : "未接入"}
+                    </span>
+                  </div>
+
+                  <div className="voice-meter" aria-label="麦克风音量">
+                    <span style={{ transform: `scaleX(${Math.max(audioLevel, 0.04)})` }} />
+                  </div>
+
+                  <div className="transcript-grid">
+                    <div className="transcript-box">
+                      <span>实时转写</span>
+                      <p>{liveTranscript || "—"}</p>
+                    </div>
+                    <div className="transcript-box transcript-box--active">
+                      <span>唤醒片段</span>
+                      <p>{wakeTranscript || "—"}</p>
+                    </div>
+                  </div>
+
+                  <label className="manual-asr">
+                    <span>手动输入</span>
+                    <textarea
+                      value={manualTranscript}
+                      onChange={(event) => setManualTranscript(event.target.value)}
+                      rows={4}
+                    />
+                  </label>
+
+                  <div className="voice-actions">
+                    <button
+                      className="secondary-button secondary-button--inline"
+                      type="button"
+                      onClick={handleManualTranscriptSubmit}
+                      disabled={!manualTranscript.trim()}
+                    >
+                      <Icon name="icon-check" />
+                      <span>提交</span>
+                    </button>
+                    <button
+                      className="send-button send-button--wide"
+                      type="button"
+                      onClick={handleImmediateAsk}
+                      disabled={!manualTranscript.trim() && !wakeTranscript.trim()}
+                    >
+                      <Icon name="icon-send" />
+                      <span>提问</span>
+                    </button>
+                  </div>
+
+                  {(cameraError || microphoneError || assistantError) && (
+                    <div className="error-stack">
+                      {cameraError && <p>{cameraError}</p>}
+                      {microphoneError && <p>{microphoneError}</p>}
+                      {assistantError && <p>{assistantError}</p>}
+                    </div>
+                  )}
+                </section>
+
                 <section className="assistant-log">
                   <div className="panel-header">
                     <div>
