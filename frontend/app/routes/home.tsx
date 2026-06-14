@@ -446,9 +446,6 @@ export default function Home() {
         audio: false,
       });
       screenStreamRef.current = stream;
-      if (screenVideoRef.current) {
-        screenVideoRef.current.srcObject = stream;
-      }
       stream.getVideoTracks()[0].onended = () => stopScreenShare();
       setScreenSharingOn(true);
     } catch {
@@ -1490,6 +1487,17 @@ export default function Home() {
   useEffect(() => {
     microphoneOnRef.current = microphoneOn;
   }, [microphoneOn]);
+
+  useEffect(() => {
+    if (screenSharingOn && screenStreamRef.current && screenVideoRef.current) {
+      screenVideoRef.current.srcObject = screenStreamRef.current;
+    }
+    return () => {
+      if (screenVideoRef.current) {
+        screenVideoRef.current.srcObject = null;
+      }
+    };
+  }, [screenSharingOn]);
 
   useEffect(() => {
     const timer = window.setInterval(() => setClockLabel(formatClock()), 15000);
