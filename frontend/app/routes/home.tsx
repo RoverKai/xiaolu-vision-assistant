@@ -85,7 +85,7 @@ const initialMessages: Message[] = [
     id: 1,
     role: "system",
     meta: "系统",
-    text: "开启摄像头和麦克风后，说“小噜”或“小鹿”开始提问。2 秒内没有新转写文本时，我会截取一张摄像头关键帧并调用多模态模型。",
+    text: "说“小噜”或“小鹿”开始提问。",
   },
 ];
 
@@ -167,25 +167,11 @@ function stripWakeWord(text: string) {
 }
 
 function buildBannerMessage(phase: AssistantPhase, microphoneOn: boolean) {
-  if (phase === "thinking") {
-    return "小噜正在结合语音文本和摄像头关键帧生成回答。";
-  }
-
-  if (phase === "capturing") {
-    return "静默窗口已结束，正在截取摄像头关键帧。";
-  }
-
-  if (phase === "speaking") {
-    return "回答已生成，正在播放语音。";
-  }
-
-  if (phase === "error") {
-    return "链路发生错误，请查看右侧状态并重试。";
-  }
-
-  return microphoneOn
-    ? "麦克风已接入，等待“小噜”或“小鹿”唤醒。"
-    : "请先接入麦克风；摄像头可用于生成视觉关键帧。";
+  if (phase === "thinking") return "小噜正在思考…";
+  if (phase === "capturing") return "正在截取画面…";
+  if (phase === "speaking") return "正在播报回答…";
+  if (phase === "error") return "发生错误，请重试。";
+  return microphoneOn ? "等待“小噜”或“小鹿”唤醒" : "请接入麦克风开始对话";
 }
 
 function getSpeechRecognitionConstructor() {
@@ -1547,48 +1533,52 @@ export default function Home() {
                   <div className="panel-header">
                     <div>
                       <p className="panel-eyebrow">视觉输入</p>
-                      <h2>摄像头关键帧</h2>
+                      <h2>摄像头画面</h2>
                     </div>
                     <span className={`status-chip${cameraOn ? " status-chip--live" : ""}`}>
-                      {cameraOn ? "实时画面" : "未接入"}
+                      {cameraOn ? "实时" : "未接入"}
                     </span>
                   </div>
 
-                  <div className="camera-stage">
-                    <video
-                      ref={videoRef}
-                      className="camera-preview"
-                      autoPlay
-                      muted
-                      playsInline
-                    />
-                    {!cameraOn && (
-                      <div className="camera-placeholder">
-                        <Icon name="icon-camera" />
-                        <strong>等待摄像头接入</strong>
-                        <span>接入后，静默窗口结束时会自动截取一张关键帧。</span>
+                  <div className="vision-panel__video">
+                    <div className="video-grid" data-count="1">
+                      <div className="video-item">
+                        <video
+                          ref={videoRef}
+                          className="camera-preview"
+                          autoPlay
+                          muted
+                          playsInline
+                        />
+                        {!cameraOn && (
+                          <div className="camera-placeholder">
+                            <Icon name="icon-camera" />
+                            <span>未接入</span>
+                          </div>
+                        )}
                       </div>
-                    )}
-                    <canvas ref={canvasRef} className="capture-canvas" />
+                    </div>
                   </div>
 
-                  <div className="keyframe-strip">
-                    <div className="keyframe-preview">
-                      {lastKeyframe ? (
-                        <img src={lastKeyframe} alt="最近一次摄像头关键帧" />
-                      ) : (
-                        <span>暂无关键帧</span>
-                      )}
-                    </div>
-                    <div className="keyframe-meta">
-                      <strong>最近关键帧</strong>
-                      <span>
-                        {lastKeyframe
-                          ? "会随本轮问题一起发送给多模态模型。"
-                          : "说出唤醒词并结束提问后自动生成。"}
-                      </span>
+                  <div className="vision-panel__keyframe">
+                    <div className="keyframe-strip">
+                      <div className="keyframe-preview">
+                        {lastKeyframe ? (
+                          <img src={lastKeyframe} alt="最近关键帧" />
+                        ) : (
+                          <span>暂无关键帧</span>
+                        )}
+                      </div>
+                      <div className="keyframe-meta">
+                        <strong>最近关键帧</strong>
+                        <span>
+                          {lastKeyframe ? "就绪" : "等待提问后自动生成"}
+                        </span>
+                      </div>
                     </div>
                   </div>
+
+                  <canvas ref={canvasRef} className="capture-canvas" />
                 </section>
 
                 <section className="voice-panel">
@@ -1611,14 +1601,11 @@ export default function Home() {
                   <div className="transcript-grid">
                     <div className="transcript-box">
                       <span>实时转写</span>
-                      <p>{liveTranscript || "等待语音识别结果。"}</p>
+                      <p>{liveTranscript || "等待语音输入"}</p>
                     </div>
                     <div className="transcript-box transcript-box--active">
                       <span>当前唤醒片段</span>
-                      <p>
-                        {wakeTranscript ||
-                          "检测到“小噜”或“小鹿”后，这里会持续累积文本。"}
-                      </p>
+                      <p>{wakeTranscript || "等待唤醒"}</p>
                     </div>
                   </div>
 
@@ -1650,25 +1637,6 @@ export default function Home() {
                       <Icon name="icon-send" />
                       <span>立即提问</span>
                     </button>
-                  </div>
-
-                  <div className="integration-status">
-                    <p>
-                      火山 ASR：
-                      {asrBackendState === "active"
-                        ? "已连接"
-                        : asrBackendState === "unconfigured"
-                          ? "未配置"
-                          : asrBackendState === "error"
-                            ? "异常"
-                            : "待启动"}
-                    </p>
-                    <p>{asrBackendMessage}</p>
-                    <p>
-                      浏览器转写：
-                      {recognitionAvailable ? "兜底可用" : "不可用，可使用手动转写"}
-                    </p>
-                    <p>静默窗口：{quietWindowMs / 1000} 秒无新文本后自动截帧</p>
                   </div>
 
                   {(cameraError || microphoneError || assistantError) && (
