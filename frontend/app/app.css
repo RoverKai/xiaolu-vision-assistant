@@ -2279,6 +2279,7 @@ input {
   grid-row: 1;
   min-width: 0;
   min-height: 0;
+  height: 100%;
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -2371,6 +2372,7 @@ input {
 }
 
 .panel-header {
+  flex-shrink: 0;
   min-height: 52px;
   display: flex;
   align-items: center;
@@ -2444,6 +2446,7 @@ input {
 }
 
 .chat-input {
+  flex-shrink: 0;
   display: flex;
   gap: var(--space-2);
   padding: var(--space-3) var(--space-4);
@@ -2588,6 +2591,7 @@ input {
 
 
 .error-stack {
+  flex-shrink: 0;
   margin: var(--space-4) var(--space-5) 0;
   display: grid;
   gap: var(--space-2);
@@ -2609,8 +2613,9 @@ input {
 }
 
 .message-list {
+  flex: 1;
   min-height: 0;
-  overflow: auto;
+  overflow-y: auto;
   display: flex;
   flex-direction: column;
   gap: var(--space-3);
@@ -2685,6 +2690,7 @@ input {
   .chat-area {
     grid-column: 1;
     grid-row: auto;
+    height: auto;
     max-height: 50vh;
   }
 
