@@ -80,14 +80,7 @@ const authoritativeAsrBudgetMs = 450;
 const wakeWordPattern = /(小噜|小鹿|xiaolu|小路)/i;
 const defaultManualTranscript = "小噜，帮我看看画面里现在有什么重点";
 
-const initialMessages: Message[] = [
-  {
-    id: 1,
-    role: "system",
-    meta: "系统",
-    text: "说“小噜”或“小鹿”开始提问。",
-  },
-];
+const initialMessages: Message[] = [];
 
 export function meta(_: Route.MetaArgs) {
   return [
@@ -1500,7 +1493,6 @@ export default function Home() {
                   <span className="logo__mark" aria-hidden="true"></span>
                   <span>小噜AI 视觉语音助手</span>
                 </div>
-                <span className="room-pill">唤醒词：小噜 / 小鹿</span>
               </div>
 
               <div className="topbar__center">
@@ -1513,8 +1505,7 @@ export default function Home() {
 
               <div className="topbar__right">
                 <span className="meta-pill">
-                  {cameraOn ? "摄像头已接入" : "摄像头未接入"} /{" "}
-                  {microphoneOn ? "麦克风已接入" : "麦克风未接入"}
+                  {cameraOn ? "摄像头" : ""}{cameraOn && microphoneOn ? " · " : ""}{microphoneOn ? "麦克风" : ""}{!cameraOn && !microphoneOn ? "未接入设备" : ""}
                 </span>
                 <button className="user-chip" type="button" aria-label="当前用户">
                   林
@@ -1532,7 +1523,7 @@ export default function Home() {
 
                 {/* Video grid: spans left + middle, row 1 */}
                 <div className="video-grid-area">
-                  <div className="video-grid" data-count="2">
+                  <div className="video-grid" data-count={cameraOn ? "1" : "0"}>
                     <div className="video-item">
                       <video
                         ref={videoRef}
@@ -1547,12 +1538,6 @@ export default function Home() {
                           <span>未接入</span>
                         </div>
                       )}
-                    </div>
-                    <div className="video-item">
-                      <div className="camera-placeholder">
-                        <Icon name="icon-camera" />
-                        <span>未接入</span>
-                      </div>
                     </div>
                   </div>
                   <canvas ref={canvasRef} className="capture-canvas" />
