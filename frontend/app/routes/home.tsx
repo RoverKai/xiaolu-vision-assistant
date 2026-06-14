@@ -1513,11 +1513,6 @@ export default function Home() {
               </div>
             </header>
 
-            <div className="notice-bar">
-              <span className="notice-bar__dot"></span>
-              <span>{buildBannerMessage(phase, microphoneOn)}</span>
-            </div>
-
             <main className="content-area content-area--assistant">
               <section className="voice-workspace" aria-label="视觉语音助手工作台">
 
@@ -1554,69 +1549,40 @@ export default function Home() {
                       )}
                     </div>
                     <div className="keyframe-meta">
-                      <strong>最近关键帧</strong>
-                      <span>{lastKeyframe ? "就绪" : "等待提问后生成"}</span>
+                      <strong>屏幕共享</strong>
+                      <span>{lastKeyframe ? "共享中" : "未共享"}</span>
                     </div>
                   </div>
                 </div>
 
                 {/* Character area: middle column, row 2 */}
                 <div className="character-area">
-                  <div className="panel-header">
-                    <div>
-                      <p className="panel-eyebrow">语音输入</p>
-                      <h2>小噜</h2>
+                  <div className="character-avatar">
+                    <div className="character-avatar__circle">
+                      <Icon name="icon-microphone" />
                     </div>
-                    <span className={`status-chip${microphoneOn ? " status-chip--live" : ""}`}>
-                      {microphoneOn ? "收听中" : "未接入"}
-                    </span>
-                  </div>
-
-                  <div className="voice-meter" aria-label="麦克风音量">
-                    <span style={{ transform: `scaleX(${Math.max(audioLevel, 0.04)})` }} />
-                  </div>
-
-                  <div className="transcript-grid">
-                    <div className="transcript-box">
-                      <span>实时转写</span>
-                      <p>{liveTranscript || "—"}</p>
-                    </div>
-                    <div className="transcript-box transcript-box--active">
-                      <span>唤醒片段</span>
-                      <p>{wakeTranscript || "—"}</p>
+                    <div className="voice-meter" aria-label="麦克风音量">
+                      <span style={{ transform: `scaleX(${Math.max(audioLevel, 0.04)})` }} />
                     </div>
                   </div>
-
-                  <label className="manual-asr">
-                    <span>手动输入</span>
-                    <textarea
-                      value={manualTranscript}
-                      onChange={(event) => setManualTranscript(event.target.value)}
-                      rows={3}
-                    />
-                  </label>
-
-                  <div className="voice-actions">
-                    <button
-                      className="secondary-button secondary-button--inline"
-                      type="button"
-                      onClick={handleManualTranscriptSubmit}
-                      disabled={!manualTranscript.trim()}
-                    >
-                      <Icon name="icon-check" />
-                      <span>提交</span>
-                    </button>
-                    <button
-                      className="send-button send-button--wide"
-                      type="button"
-                      onClick={handleImmediateAsk}
-                      disabled={!manualTranscript.trim() && !wakeTranscript.trim()}
-                    >
-                      <Icon name="icon-send" />
-                      <span>提问</span>
-                    </button>
-                  </div>
-
+                  <p className="character-label">{microphoneOn ? "正在听…" : "说\"小噜\"唤醒我"}</p>
+                  {liveTranscript && <p className="character-transcript">{liveTranscript}</p>}
+                  <textarea
+                    className="character-input"
+                    value={manualTranscript}
+                    onChange={(event) => setManualTranscript(event.target.value)}
+                    placeholder="或输入文字…"
+                    rows={2}
+                  />
+                  <button
+                    className="send-button"
+                    type="button"
+                    onClick={handleImmediateAsk}
+                    disabled={!manualTranscript.trim() && !wakeTranscript.trim()}
+                  >
+                    <Icon name="icon-send" />
+                    <span>发送</span>
+                  </button>
                   {(cameraError || microphoneError || assistantError) && (
                     <div className="error-stack">
                       {cameraError && <p>{cameraError}</p>}

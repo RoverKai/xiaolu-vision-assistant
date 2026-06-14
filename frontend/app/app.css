@@ -233,7 +233,7 @@ input {
 .meeting-shell {
   height: 100%;
   display: grid;
-  grid-template-rows: 68px 40px 1fr 88px;
+  grid-template-rows: 52px 1fr 68px;
 }
 
 .topbar {
@@ -2265,7 +2265,7 @@ input {
   position: relative;
   z-index: var(--z-stage);
   display: grid;
-  grid-template-columns: 3fr 3fr 4fr;
+  grid-template-columns: 3.5fr 3.5fr 3fr;
   grid-template-rows: 7fr 3fr;
   gap: 0;
   min-height: 0;
@@ -2380,12 +2380,12 @@ input {
 }
 
 .panel-header {
-  min-height: 72px;
+  min-height: 52px;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: var(--space-4);
-  padding: var(--space-4) var(--space-5);
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-4);
   border-bottom: 1px solid var(--line);
 }
 
@@ -2437,22 +2437,72 @@ input {
   height: 100%;
 }
 
-.character-area .panel-header {
-  flex: 0 0 auto;
+.character-area {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
 }
 
-.character-area .voice-meter {
-  margin: var(--space-3) var(--space-5) 0;
+.character-avatar {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-2);
 }
 
-.character-area .transcript-grid {
-  flex: 1;
-  overflow: auto;
-  margin: 0 var(--space-5);
+.character-avatar__circle {
+  width: 72px;
+  height: 72px;
+  border-radius: 50%;
+  background: var(--brand-soft);
+  display: grid;
+  place-items: center;
 }
 
-.character-area .voice-actions {
-  padding-bottom: var(--space-3);
+.character-avatar__circle .icon {
+  width: 32px;
+  height: 32px;
+  color: var(--brand);
+}
+
+.character-avatar .voice-meter {
+  width: 100%;
+  max-width: 160px;
+}
+
+.character-label {
+  margin: 0;
+  font-size: var(--font-size-md);
+  color: var(--text-secondary);
+  text-align: center;
+}
+
+.character-transcript {
+  margin: 0;
+  font-size: var(--font-size-sm);
+  color: var(--text-muted);
+  text-align: center;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.character-input {
+  width: 100%;
+  padding: var(--space-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  font-size: var(--font-size-sm);
+  resize: none;
+  font-family: inherit;
+}
+
+.character-area .send-button {
+  width: 100%;
 }
 
 .keyframe-preview {
