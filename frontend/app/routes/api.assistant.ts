@@ -73,6 +73,19 @@ export async function action({ request }: ActionFunctionArgs) {
     );
   }
 
+  const speak = payload.speak !== false;
+
+  // Streaming path: SSE for text + per-sentence TTS audio
+  if (speak) {
+    return streamAssistantResponse({
+      transcript,
+      prompt,
+      imageDataUrl,
+      history: payload.history ?? [],
+    });
+  }
+
+  // Non-streaming path: JSON response (text only, no TTS)
   try {
     const answer = await requestArkResponse({
       transcript,
@@ -81,28 +94,210 @@ export async function action({ request }: ActionFunctionArgs) {
       history: payload.history ?? [],
     });
 
-    let audioDataUrl: string | null = null;
-    let ttsError: string | null = null;
-
-    if (payload.speak !== false) {
-      try {
-        audioDataUrl = await requestVolcengineTts(answer);
-      } catch (error) {
-        ttsError = getErrorMessage(error);
-      }
-    }
-
-    return Response.json({
-      text: answer,
-      audioDataUrl,
-      ttsError,
-    });
+    return Response.json({ text: answer });
   } catch (error) {
     return Response.json(
       { error: getErrorMessage(error) },
       { status: 502 },
     );
   }
+}
+
+async function streamAssistantResponse(options: {
+  transcript: string;
+  prompt: string;
+  imageDataUrl: string | null;
+  history: AssistantMessage[];
+}) {
+  const apiKey = process.env.ARK_API_KEY ?? process.env.VOLCENGINE_ARK_API_KEY;
+  if (!apiKey) {
+    return Response.json(
+      { error: "Missing ARK_API_KEY or VOLCENGINE_ARK_API_KEY" },
+      { status: 502 },
+    );
+  }
+
+  const content: ArkContent[] = [];
+  if (options.imageDataUrl) {
+    content.push({ type: "input_image", image_url: options.imageDataUrl });
+  }
+  content.push({
+    type: "input_text",
+    text: buildPrompt(options),
+  });
+
+  const arkResponse = await fetch(arkEndpoint, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      model: arkModel,
+      stream: true,
+      input: [{ role: "user", content }],
+    }),
+  });
+
+  if (!arkResponse.ok) {
+    const errorText = await arkResponse.text().catch(() => "");
+    return Response.json(
+      { error: errorText || `Ark request failed: ${arkResponse.status}` },
+      { status: 502 },
+    );
+  }
+
+  const stream = new ReadableStream({
+    async start(controller) {
+      const encoder = new TextEncoder();
+      const writeSSE = (data: Record<string, unknown>) => {
+        controller.enqueue(
+          encoder.encode(`data: ${JSON.stringify(data)}\n\n`),
+        );
+      };
+
+      try {
+        const reader = arkResponse.body!.getReader();
+        const decoder = new TextDecoder();
+        let buffer = "";
+        let fullText = "";
+
+        // Read Ark SSE stream
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split("\n");
+          buffer = lines.pop() ?? "";
+
+          for (const line of lines) {
+            if (!line.startsWith("data: ")) continue;
+            const dataStr = line.slice(6).trim();
+            if (dataStr === "[DONE]") continue;
+
+            try {
+              const event = JSON.parse(dataStr) as Record<string, unknown>;
+              const type = event.type as string | undefined;
+
+              if (type === "response.output_text.delta") {
+                const delta = (event.delta as string) ?? "";
+                if (delta) {
+                  fullText += delta;
+                  writeSSE({ type: "text_delta", text: delta });
+                }
+              } else if (type === "response.completed") {
+                const response = event.response as Record<string, unknown> | undefined;
+                if (response?.status && response.status !== "completed") {
+                  const details =
+                    response.status_details as Record<string, unknown> | undefined;
+                  const errorObj =
+                    details?.error as Record<string, unknown> | undefined;
+                  const statusMsg = errorObj?.message ?? response.status;
+                  writeSSE({ type: "error", message: String(statusMsg) });
+                  controller.close();
+                  return;
+                }
+              }
+            } catch {
+              // Skip unparseable SSE lines
+            }
+          }
+        }
+
+        // Flush remaining buffer
+        if (buffer.startsWith("data: ")) {
+          const dataStr = buffer.slice(6).trim();
+          if (dataStr !== "[DONE]") {
+            try {
+              const event = JSON.parse(dataStr) as Record<string, unknown>;
+              const delta = (event.delta as string) ?? "";
+              if (delta) {
+                fullText += delta;
+                writeSSE({ type: "text_delta", text: delta });
+              }
+            } catch {
+              // skip
+            }
+          }
+        }
+
+        if (!fullText.trim()) {
+          writeSSE({
+            type: "error",
+            message: "Ark response did not include output text",
+          });
+          controller.close();
+          return;
+        }
+
+        writeSSE({ type: "text_done" });
+
+        // Per-sentence TTS synthesis
+        const sentences = splitSentences(fullText);
+        const ttsApiKey = process.env.VOLCENGINE_TTS_API_KEY;
+
+        if (ttsApiKey && sentences.length > 0) {
+          const concurrency = 2;
+          const audioChunks = await synthesizeSentences(sentences, concurrency);
+          for (const chunk of audioChunks) {
+            if (chunk) {
+              writeSSE({ type: "audio", data: chunk });
+            }
+          }
+        }
+
+        writeSSE({ type: "done" });
+      } catch (error) {
+        writeSSE({
+          type: "error",
+          message: error instanceof Error ? error.message : "Stream failed",
+        });
+      } finally {
+        controller.close();
+      }
+    },
+  });
+
+  return new Response(stream, {
+    headers: {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache",
+      Connection: "keep-alive",
+    },
+  });
+}
+
+function splitSentences(text: string): string[] {
+  const sentences = text.split(/(?<=[。！？\n])\s*/);
+  return sentences.map((s) => s.trim()).filter(Boolean);
+}
+
+async function synthesizeSentences(
+  sentences: string[],
+  concurrency: number,
+): Promise<(string | null)[]> {
+  const results: (string | null)[] = new Array(sentences.length).fill(null);
+  let index = 0;
+
+  const worker = async () => {
+    while (index < sentences.length) {
+      const currentIndex = index++;
+      try {
+        results[currentIndex] = await requestVolcengineTts(
+          sentences[currentIndex],
+        );
+      } catch {
+        results[currentIndex] = null;
+      }
+    }
+  };
+
+  const workers = Array.from({ length: Math.min(concurrency, sentences.length) }, () =>
+    worker(),
+  );
+  await Promise.all(workers);
+  return results;
 }
 
 function normalizeText(value: unknown) {

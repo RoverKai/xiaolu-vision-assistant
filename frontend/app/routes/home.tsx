@@ -351,6 +351,7 @@ export default function Home() {
   const utteranceStartSampleRef = useRef(0);
   const utteranceUploadInFlightRef = useRef(false);
   const phaseRef = useRef<AssistantPhase>("idle");
+  const microphoneOnRef = useRef(false);
   const utteranceStartTimeRef = useRef(0);
   const activeUtteranceRef = useRef("");
   const lastRecognizedTextRef = useRef<{ text: string; at: number } | null>(
@@ -479,76 +480,277 @@ export default function Home() {
 
       setAssistantError("");
       setPhase("thinking");
-      appendMessage({
+
+      // Add user message first
+      const userMessageId = nextMessageIdRef.current++;
+      const userMessage: Message = {
+        id: userMessageId,
         role: "user",
         meta: `${formatClock()} · 你`,
         text: cleanQuestion || "请根据当前画面回答。",
         imageDataUrl,
-      });
+      };
+      setMessages((prev) => [...prev, userMessage]);
+
+      // Add placeholder assistant message for streaming text
+      const assistantMessageId = nextMessageIdRef.current++;
+      const assistantMessage: Message = {
+        id: assistantMessageId,
+        role: "assistant",
+        meta: `${formatClock()} · 小噜`,
+        text: "",
+        audioDataUrl: null,
+      };
+      setMessages((prev) => [...prev, assistantMessage]);
 
       try {
         const response = await fetch("/api/assistant", {
           method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-          },
+          headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             transcript: cleanQuestion,
             imageDataUrl,
             speak: true,
             history: messagesRef.current
-              .filter((message) => message.role !== "system")
+              .filter((m) => m.role !== "system")
               .slice(-8)
-              .map((message) => ({
-                role: message.role === "assistant" ? "assistant" : "user",
-                text: message.text,
+              .map((m) => ({
+                role: m.role === "assistant" ? "assistant" : "user",
+                text: m.text,
               })),
           }),
         });
 
+        const contentType = response.headers.get("content-type") ?? "";
+
+        // SSE streaming path
+        if (contentType.includes("text/event-stream")) {
+          await handleSseStream(response, assistantMessageId);
+          return;
+        }
+
+        // JSON fallback path
         const data = (await response.json()) as AssistantResponse;
         if (!response.ok || data.error) {
           throw new Error(data.error || `Assistant request failed: ${response.status}`);
         }
 
         const answer = data.text?.trim() || "我没有得到可用回答。";
-        appendMessage({
-          role: "assistant",
-          meta: `${formatClock()} · 小噜`,
-          text: data.ttsError ? `${answer}\n\n语音合成未完成：${data.ttsError}` : answer,
-          audioDataUrl: data.audioDataUrl,
-        });
-
-        if (data.audioDataUrl) {
-          setPhase("speaking");
-          const audio = new Audio(data.audioDataUrl);
-          audio.onended = () => setPhase(microphoneOn ? "listening" : "idle");
-          audio.onerror = () => setPhase(microphoneOn ? "listening" : "idle");
-          const played = await audio.play().then(
-            () => true,
-            () => false,
-          );
-          if (!played) {
-            setAssistantError("浏览器阻止了自动播放，可使用消息里的音频控件播放。");
-            setPhase(microphoneOn ? "listening" : "idle");
-          }
-        } else {
-          setPhase(microphoneOn ? "listening" : "idle");
-        }
+        finalizeAssistantMessage(assistantMessageId, answer, data.audioDataUrl);
       } catch (error) {
         const message =
           error instanceof Error ? error.message : "小噜服务调用失败。";
         setAssistantError(message);
         setPhase("error");
-        appendMessage({
-          role: "system",
-          meta: `${formatClock()} · 错误`,
-          text: message,
-        });
+        setMessages((prev) =>
+          prev.map((m) =>
+            m.id === assistantMessageId
+              ? { ...m, text: message }
+              : m,
+          ),
+        );
       }
     },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
     [appendMessage, microphoneOn],
   );
+
+  // Returns a function to avoid putting stream logic in the callback dep chain
+  async function handleSseStream(response: Response, messageId: number) {
+    const reader = response.body?.getReader();
+    if (!reader) {
+      throw new Error("No response body");
+    }
+
+    const decoder = new TextDecoder();
+    let buffer = "";
+    let fullText = "";
+    const audioChunks: string[] = [];
+    let currentAudio: HTMLAudioElement | null = null;
+    let audioPlayIndex = 0;
+
+    const playNextAudio = () => {
+      if (audioPlayIndex < audioChunks.length) {
+        const chunk = audioChunks[audioPlayIndex++];
+        currentAudio = new Audio(chunk);
+        currentAudio.onended = () => {
+          currentAudio = null;
+          playNextAudio();
+        };
+        currentAudio.onerror = () => {
+          currentAudio = null;
+          playNextAudio();
+        };
+        currentAudio.play().catch(() => {
+          currentAudio = null;
+          playNextAudio();
+        });
+      } else {
+        setPhase((prev) =>
+          prev === "speaking" && microphoneOnRef.current ? "listening" : prev === "speaking" ? "idle" : prev,
+        );
+      }
+    };
+
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() ?? "";
+
+        for (const line of lines) {
+          if (!line.startsWith("data: ")) continue;
+          const dataStr = line.slice(6).trim();
+          if (!dataStr) continue;
+
+          try {
+            const event = JSON.parse(dataStr) as Record<string, unknown>;
+            const type = event.type as string;
+
+            switch (type) {
+              case "text_delta": {
+                const delta = (event.text as string) ?? "";
+                fullText += delta;
+                setMessages((prev) =>
+                  prev.map((m) =>
+                    m.id === messageId ? { ...m, text: fullText } : m,
+                  ),
+                );
+                break;
+              }
+              case "text_done": {
+                setMessages((prev) =>
+                  prev.map((m) =>
+                    m.id === messageId
+                      ? { ...m, meta: `${formatClock()} · 小噜`, text: fullText }
+                      : m,
+                  ),
+                );
+                break;
+              }
+              case "audio": {
+                const audioData = (event.data as string) ?? "";
+                if (audioData) {
+                  audioChunks.push(audioData);
+                  // Update message with first audio chunk for the player
+                  if (audioChunks.length === 1) {
+                    setPhase("speaking");
+                    setMessages((prev) =>
+                      prev.map((m) =>
+                        m.id === messageId
+                          ? { ...m, audioDataUrl: audioData }
+                          : m,
+                      ),
+                    );
+                    playNextAudio();
+                  }
+                }
+                break;
+              }
+              case "error": {
+                const errorMsg = (event.message as string) ?? "Stream error";
+                setAssistantError(errorMsg);
+                setMessages((prev) =>
+                  prev.map((m) =>
+                    m.id === messageId
+                      ? { ...m, text: fullText ? `${fullText}\n\n语音合成失败：${errorMsg}` : errorMsg }
+                      : m,
+                  ),
+                );
+                if (!fullText) setPhase("error");
+                break;
+              }
+              case "done": {
+                // Finalize
+                if (!fullText) {
+                  setMessages((prev) =>
+                    prev.map((m) =>
+                      m.id === messageId
+                        ? { ...m, text: "我没有得到可用回答。" }
+                        : m,
+                    ),
+                  );
+                }
+                if (!audioChunks.length) {
+                  setPhase((prev) =>
+                    prev === "speaking" ? (microphoneOnRef.current ? "listening" : "idle") : prev,
+                  );
+                }
+                break;
+              }
+            }
+          } catch {
+            // Skip unparseable lines
+          }
+        }
+      }
+
+      // Flush remaining buffer
+      if (buffer.startsWith("data: ")) {
+        const dataStr = buffer.slice(6).trim();
+        if (dataStr) {
+          try {
+            const event = JSON.parse(dataStr) as Record<string, unknown>;
+            if (event.type === "done") {
+              if (!audioChunks.length) {
+                setPhase((prev) =>
+                  prev === "speaking" ? (microphoneOnRef.current ? "listening" : "idle") : prev,
+                );
+              }
+            }
+          } catch {
+            // skip
+          }
+        }
+      }
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : "Stream read failed";
+      if (fullText) {
+        setAssistantError(`语音可能未完整播放：${message}`);
+      } else {
+        setAssistantError(message);
+        setPhase("error");
+        setMessages((prev) =>
+          prev.map((m) =>
+            m.id === messageId ? { ...m, text: message } : m,
+          ),
+        );
+      }
+    }
+  }
+
+  async function finalizeAssistantMessage(
+    messageId: number,
+    text: string,
+    audioDataUrl: string | null | undefined,
+  ) {
+    setMessages((prev) =>
+      prev.map((m) =>
+        m.id === messageId ? { ...m, text, audioDataUrl: audioDataUrl ?? null } : m,
+      ),
+    );
+
+    if (audioDataUrl) {
+      setPhase("speaking");
+      const audio = new Audio(audioDataUrl);
+      audio.onended = () => setPhase(microphoneOnRef.current ? "listening" : "idle");
+      audio.onerror = () => setPhase(microphoneOnRef.current ? "listening" : "idle");
+      const played = await audio.play().then(
+        () => true,
+        () => false,
+      );
+      if (!played) {
+        setAssistantError("浏览器阻止了自动播放，可使用消息里的音频控件播放。");
+        setPhase(microphoneOnRef.current ? "listening" : "idle");
+      }
+    } else {
+      setPhase(microphoneOnRef.current ? "listening" : "idle");
+    }
+  }
 
   const uploadUtteranceAsr = useCallback(
     async (samples: Float32Array, inputSampleRate: number): Promise<string> => {
@@ -1043,6 +1245,10 @@ export default function Home() {
   useEffect(() => {
     phaseRef.current = phase;
   }, [phase]);
+
+  useEffect(() => {
+    microphoneOnRef.current = microphoneOn;
+  }, [microphoneOn]);
 
   useEffect(() => {
     const timer = window.setInterval(() => setClockLabel(formatClock()), 15000);
