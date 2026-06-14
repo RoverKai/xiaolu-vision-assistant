@@ -1,6 +1,7 @@
 # xiaolu-vision-assistant
 
 多人对话 AI 助手，通过特征词「小噜」唤醒，在群聊/多人场景中提供智能应答。
+视频连接：https://space.bilibili.com/387140239
 
 ---
 
