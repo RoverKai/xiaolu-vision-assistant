@@ -1557,18 +1557,15 @@ export default function Home() {
                 {/* Video grid: spans left + middle, row 1 */}
                 <div className="video-grid-area">
                   <div className="video-grid" data-count={cameraOn ? "1" : "0"}>
-                    {cameraOn ? (
-                      <div className="video-item">
-                        <video ref={videoRef} className="camera-preview" autoPlay muted playsInline />
-                      </div>
-                    ) : (
-                      <div className="video-item">
+                    <div className="video-item">
+                      <video ref={videoRef} className="camera-preview" autoPlay muted playsInline />
+                      {!cameraOn && (
                         <div className="camera-placeholder">
                           <Icon name="icon-camera" />
                           <span>未接入</span>
                         </div>
-                      </div>
-                    )}
+                      )}
+                    </div>
                   </div>
                   <canvas ref={canvasRef} className="capture-canvas" />
                 </div>
