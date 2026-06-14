@@ -73,6 +73,7 @@ declare global {
 const quietWindowMs = 2000;
 const asrChunkSeconds = 1.6;
 const asrSampleRate = 16000;
+const maxUtteranceSeconds = 30;
 const wakeWordPattern = /(小噜|小鹿|xiaolu|小路)/i;
 const defaultManualTranscript = "小噜，帮我看看画面里现在有什么重点";
 
@@ -253,6 +254,58 @@ function pcm16ToBase64(samples: Int16Array) {
   return btoa(binary);
 }
 
+function computeWordOverlap(textA: string, textB: string): number {
+  const wordsA = new Set(textA.split(/\s+/).filter(Boolean));
+  const wordsB = new Set(textB.split(/\s+/).filter(Boolean));
+  if (wordsA.size === 0 && wordsB.size === 0) {
+    return 0;
+  }
+
+  let intersection = 0;
+  for (const word of wordsA) {
+    if (wordsB.has(word)) {
+      intersection += 1;
+    }
+  }
+
+  const union = new Set([...wordsA, ...wordsB]);
+  return intersection / union.size;
+}
+
+function extractAudioSlice(
+  chunks: Float32Array[],
+  startSample: number,
+  endSample: number,
+) {
+  const length = endSample - startSample;
+  if (length <= 0) {
+    return new Float32Array(0);
+  }
+
+  const result = new Float32Array(length);
+  let resultOffset = 0;
+  let chunkStartSample = 0;
+
+  for (const chunk of chunks) {
+    const chunkEndSample = chunkStartSample + chunk.length;
+    if (chunkEndSample <= startSample) {
+      chunkStartSample = chunkEndSample;
+      continue;
+    }
+    if (chunkStartSample >= endSample) {
+      break;
+    }
+
+    const sliceStart = Math.max(0, startSample - chunkStartSample);
+    const sliceEnd = Math.min(chunk.length, endSample - chunkStartSample);
+    result.set(chunk.subarray(sliceStart, sliceEnd), resultOffset);
+    resultOffset += sliceEnd - sliceStart;
+    chunkStartSample = chunkEndSample;
+  }
+
+  return result.subarray(0, resultOffset);
+}
+
 export default function Home() {
   const [cameraOn, setCameraOn] = useState(false);
   const [microphoneOn, setMicrophoneOn] = useState(false);
@@ -287,6 +340,13 @@ export default function Home() {
   const asrSampleCountRef = useRef(0);
   const asrUploadInFlightRef = useRef(false);
   const asrBackendDisabledRef = useRef(false);
+  const utteranceAudioChunksRef = useRef<Float32Array[]>([]);
+  const utteranceSampleCountRef = useRef(0);
+  const utteranceSampleRateRef = useRef(0);
+  const utteranceStartSampleRef = useRef(0);
+  const utteranceUploadInFlightRef = useRef(false);
+  const phaseRef = useRef<AssistantPhase>("idle");
+  const utteranceStartTimeRef = useRef(0);
   const activeUtteranceRef = useRef("");
   const lastRecognizedTextRef = useRef<{ text: string; at: number } | null>(
     null,
@@ -329,6 +389,9 @@ export default function Home() {
     audioSourceRef.current = null;
     asrChunksRef.current = [];
     asrSampleCountRef.current = 0;
+    utteranceAudioChunksRef.current = [];
+    utteranceSampleCountRef.current = 0;
+    utteranceStartSampleRef.current = 0;
     void audioContextRef.current?.close();
     audioContextRef.current = null;
     setAudioLevel(0);
@@ -472,31 +535,112 @@ export default function Home() {
     [appendMessage, microphoneOn],
   );
 
+  const uploadUtteranceAsr = useCallback(
+    async (samples: Float32Array, inputSampleRate: number): Promise<string> => {
+      if (utteranceUploadInFlightRef.current) {
+        return "";
+      }
+      utteranceUploadInFlightRef.current = true;
+      try {
+        const pcm = downsampleToPcm16(samples, inputSampleRate);
+        const response = await fetch("/api/asr", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            pcm16Base64: pcm16ToBase64(pcm),
+            sampleRate: asrSampleRate,
+          }),
+        });
+        const data = (await response.json()) as AsrResponse;
+
+        if (!response.ok || data.error) {
+          throw new Error(data.error || `Utterance ASR failed: ${response.status}`);
+        }
+
+        setAsrBackendState("active");
+        return data.text?.trim() || "";
+      } catch (error) {
+        const message =
+          error instanceof Error ? error.message : "Utterance ASR failed";
+        if (message.includes("Missing VOLCENGINE_ASR_API_KEY")) {
+          asrBackendDisabledRef.current = true;
+          setAsrBackendState("unconfigured");
+        } else {
+          setAsrBackendState("error");
+          setAsrBackendMessage(message);
+        }
+        return "";
+      } finally {
+        utteranceUploadInFlightRef.current = false;
+      }
+    },
+    [],
+  );
+
   const finalizeWakeQuestion = useCallback(async () => {
     clearQuietTimer();
-    const question = activeUtteranceRef.current.trim();
+    // Capture chunk-accumulated text as fallback
+    const fallbackQuestion = activeUtteranceRef.current.trim();
     activeUtteranceRef.current = "";
     setWakeTranscript("");
 
-    if (!question) {
+    if (!fallbackQuestion) {
       return;
     }
 
     setPhase("capturing");
     const keyframe = cameraOn ? captureKeyframe() : null;
     setLastKeyframe(keyframe);
+
+    // Send accumulated utterance audio for authoritative ASR result
+    let question = fallbackQuestion;
+    if (!asrBackendDisabledRef.current) {
+      const utteranceAudio = extractAudioSlice(
+        utteranceAudioChunksRef.current,
+        utteranceStartSampleRef.current,
+        utteranceSampleCountRef.current,
+      );
+
+      // Reset utterance accumulation for next utterance
+      utteranceAudioChunksRef.current = [];
+      utteranceSampleCountRef.current = 0;
+      utteranceStartSampleRef.current = 0;
+
+      if (utteranceAudio.length > 0) {
+        const authoritativeText = await uploadUtteranceAsr(
+          utteranceAudio,
+          utteranceSampleRateRef.current || asrSampleRate,
+        );
+        if (authoritativeText) {
+          const cleaned = stripWakeWord(authoritativeText);
+          question = cleaned || authoritativeText;
+          setLiveTranscript(question);
+        }
+      }
+    }
+
     await submitAssistantQuestion(question, keyframe);
-  }, [cameraOn, captureKeyframe, clearQuietTimer, submitAssistantQuestion]);
+  }, [cameraOn, captureKeyframe, clearQuietTimer, submitAssistantQuestion, uploadUtteranceAsr]);
 
   const scheduleQuietWindow = useCallback(() => {
     clearQuietTimer();
+    if (!utteranceStartTimeRef.current) {
+      utteranceStartTimeRef.current = Date.now();
+    }
+    // Force-finalize after max utterance
+    const elapsed = Date.now() - utteranceStartTimeRef.current;
+    const effectiveQuietMs = Math.min(
+      quietWindowMs,
+      Math.max(0, maxUtteranceSeconds * 1000 - elapsed),
+    );
     quietTimerRef.current = window.setTimeout(() => {
+      utteranceStartTimeRef.current = 0;
       void finalizeWakeQuestion();
-    }, quietWindowMs);
+    }, effectiveQuietMs);
   }, [clearQuietTimer, finalizeWakeQuestion]);
 
   const handleRecognizedText = useCallback(
-    (rawText: string) => {
+    (rawText: string, source: "browser" | "volcengine-chunk" | "volcengine-utterance" = "volcengine-chunk") => {
       const cleanText = rawText.replace(/\s+/g, " ").trim();
       if (!cleanText) {
         return;
@@ -504,13 +648,31 @@ export default function Home() {
 
       const now = Date.now();
       const lastText = lastRecognizedTextRef.current;
+
+      // Utterance-level results are authoritative — always accept
+      if (source === "volcengine-utterance") {
+        lastRecognizedTextRef.current = { text: cleanText, at: now };
+        setLiveTranscript(cleanText);
+        const hasWakeWord = wakeWordPattern.test(cleanText);
+        const textForUtterance = hasWakeWord ? stripWakeWord(cleanText) : cleanText;
+        activeUtteranceRef.current = textForUtterance;
+        setWakeTranscript(textForUtterance);
+        if (hasWakeWord) {
+          setPhase("listening");
+          scheduleQuietWindow();
+        }
+        return;
+      }
+
+      // Word-overlap deduplication for interim results
       if (
         lastText &&
         now - lastText.at < 3000 &&
-        (cleanText.includes(lastText.text) || lastText.text.includes(cleanText))
+        computeWordOverlap(lastText.text, cleanText) > 0.75
       ) {
         return;
       }
+
       lastRecognizedTextRef.current = { text: cleanText, at: now };
 
       setLiveTranscript(cleanText);
@@ -521,6 +683,16 @@ export default function Home() {
         activeUtteranceRef.current = afterWakeWord;
         setWakeTranscript(afterWakeWord || cleanText);
         setPhase("listening");
+
+        // Record utterance audio start (with 0.5s pre-roll for wake word context)
+        const preRollSamples = Math.floor(
+          (utteranceSampleRateRef.current || asrSampleRate) * 0.5,
+        );
+        utteranceStartSampleRef.current = Math.max(
+          0,
+          utteranceSampleCountRef.current - preRollSamples,
+        );
+        utteranceStartTimeRef.current = Date.now();
         scheduleQuietWindow();
         return;
       }
@@ -548,6 +720,12 @@ export default function Home() {
     recognition.continuous = true;
     recognition.interimResults = true;
     recognition.onresult = (event) => {
+      // Suppress results during non-listening phases (e.g. TTS playback)
+      const currentPhase = phaseRef.current;
+      if (currentPhase !== "listening") {
+        return;
+      }
+
       let finalText = "";
       let interimText = "";
 
@@ -565,7 +743,7 @@ export default function Home() {
       }
 
       if (finalText.trim()) {
-        handleRecognizedText(finalText.trim());
+        handleRecognizedText(finalText.trim(), "browser");
       }
     };
     recognition.onerror = (event) => {
@@ -628,7 +806,7 @@ export default function Home() {
         );
 
         if (data.text?.trim()) {
-          handleRecognizedText(data.text.trim());
+          handleRecognizedText(data.text.trim(), "volcengine-chunk");
         }
       } catch (error) {
         const message =
@@ -656,6 +834,11 @@ export default function Home() {
     if (!AudioContextClass) {
       return;
     }
+
+    // Reset utterance accumulation on fresh mic start
+    utteranceAudioChunksRef.current = [];
+    utteranceSampleCountRef.current = 0;
+    utteranceStartSampleRef.current = 0;
 
     const audioContext = new AudioContextClass();
     const analyser = audioContext.createAnalyser();
@@ -691,6 +874,25 @@ export default function Home() {
         return;
       }
 
+      // Accumulate audio for utterance-level ASR (ring buffer capped at 60s)
+      const maxUtteranceSamples = audioContext.sampleRate * 60;
+      utteranceAudioChunksRef.current.push(new Float32Array(input));
+      utteranceSampleCountRef.current += input.length;
+      utteranceSampleRateRef.current = audioContext.sampleRate;
+      // Trim oldest chunks if exceeding cap
+      while (
+        utteranceSampleCountRef.current > maxUtteranceSamples &&
+        utteranceAudioChunksRef.current.length > 0
+      ) {
+        const removed = utteranceAudioChunksRef.current.shift()!;
+        utteranceSampleCountRef.current -= removed.length;
+        utteranceStartSampleRef.current = Math.max(
+          0,
+          utteranceStartSampleRef.current - removed.length,
+        );
+      }
+
+      // Existing chunk-based upload logic
       asrChunksRef.current.push(new Float32Array(input));
       asrSampleCountRef.current += input.length;
 
@@ -811,6 +1013,10 @@ export default function Home() {
   useEffect(() => {
     messagesRef.current = messages;
   }, [messages]);
+
+  useEffect(() => {
+    phaseRef.current = phase;
+  }, [phase]);
 
   useEffect(() => {
     const timer = window.setInterval(() => setClockLabel(formatClock()), 15000);

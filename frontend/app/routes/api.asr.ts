@@ -101,23 +101,38 @@ async function recognizePcm(audio: Buffer, sampleRate: number) {
       socket.send(buildAsrPacket(0x2, isLast ? 0x2 : 0x0, 0x0, 0x1, chunk));
     }
 
+    const audioDurationMs = (audio.length / 2 / sampleRate) * 1000;
+    const timeoutMs = Math.max(12000, audioDurationMs * 3);
+
     await socket.readUntil((frame) => {
       const parsed = parseAsrFrame(frame);
-      if (parsed) {
-        frames.push(parsed);
+      if (!parsed) {
+        return false;
       }
-      return parsed?.messageType === 0x9 && parsed.flags === 0x3;
-    });
+
+      frames.push(parsed);
+
+      if (parsed.messageType === 0xf) {
+        const errorText = extractText(parsed.payload);
+        throw new Error(errorText || "Volcengine ASR returned an error frame");
+      }
+
+      return parsed.messageType === 0x9 && parsed.flags === 0x3;
+    }, timeoutMs);
   } finally {
     socket.close();
   }
 
-  const text = frames
+  const texts = frames
     .map((frame) => extractText(frame.payload))
-    .filter(Boolean)
-    .at(-1);
+    .filter(Boolean);
 
-  return text ?? "";
+  const text = texts.reduce(
+    (longest, current) => (current.length > longest.length ? current : longest),
+    "",
+  );
+
+  return text;
 }
 
 function buildAsrPacket(
@@ -197,6 +212,19 @@ function extractText(payload: unknown): string {
   const result = record.result;
   if (result && typeof result === "object") {
     const resultRecord = result as Record<string, unknown>;
+
+    const utterances = resultRecord.utterances;
+    if (Array.isArray(utterances)) {
+      return utterances
+        .map((u) =>
+          u && typeof u === "object"
+            ? ((u as Record<string, unknown>).text as string) ?? ""
+            : "",
+        )
+        .filter(Boolean)
+        .join("");
+    }
+
     if (typeof resultRecord.text === "string") {
       return resultRecord.text.trim();
     }
@@ -252,8 +280,8 @@ async function connectWebSocket(url: URL, headers: Record<string, string>) {
     send(data: Buffer) {
       socket.write(encodeClientFrame(data));
     },
-    readUntil(predicate: (frame: Buffer) => boolean) {
-      return parser.readUntil(predicate);
+    readUntil(predicate: (frame: Buffer) => boolean, timeoutMs?: number) {
+      return parser.readUntil(predicate, timeoutMs);
     },
     close() {
       socket.end();
@@ -308,8 +336,8 @@ function createFrameParser(socket: tls.TLSSocket, initialBuffer: Buffer) {
   }
 
   return {
-    async readUntil(predicate: (frame: Buffer) => boolean) {
-      const timeoutAt = Date.now() + 12000;
+    async readUntil(predicate: (frame: Buffer) => boolean, timeoutMs = 12000) {
+      const timeoutAt = Date.now() + timeoutMs;
       while (Date.now() < timeoutAt) {
         const frame = await readFrame();
         if (predicate(frame)) {
